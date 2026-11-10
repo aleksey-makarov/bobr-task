@@ -108,13 +108,8 @@ impl Systemd {
     }
 
     fn user_command(&self, program: &Path) -> Command {
-        let uid = current_uid();
-        let runtime_dir = format!("/run/user/{uid}");
         let mut command = Command::new(program);
-        command.env("XDG_RUNTIME_DIR", &runtime_dir).env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={runtime_dir}/bus"),
-        );
+        command.arg(format!("--machine={}@.host", current_uid()));
         command
     }
 }
@@ -127,7 +122,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn user_manager_environment_uses_current_uid() {
+    fn user_manager_transport_uses_current_uid() {
         let config = Config {
             task_root: "/tasks".into(),
             rpc_socket: "/rpc.sock".into(),
@@ -136,14 +131,14 @@ mod tests {
             systemctl: "systemctl".into(),
         };
         let command = Systemd::new(&config).user_command(Path::new("systemctl"));
-        let env: std::collections::HashMap<_, _> = command
+        let arguments: Vec<_> = command
             .as_std()
-            .get_envs()
-            .filter_map(|(key, value)| Some((key.to_owned(), value?.to_owned())))
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
             .collect();
         assert_eq!(
-            env.get(std::ffi::OsStr::new("XDG_RUNTIME_DIR")),
-            Some(&format!("/run/user/{}", current_uid()).into())
+            arguments,
+            vec![format!("--machine={}@.host", current_uid())]
         );
     }
 
@@ -187,6 +182,7 @@ mod tests {
             .unwrap();
 
         let arguments = fs::read_to_string(arguments).unwrap();
+        assert!(arguments.starts_with(&format!("--machine={}@.host\n--user\n", current_uid())));
         assert!(arguments.contains("--user\n"));
         assert!(arguments.contains("--property=ProtectSystem=strict\n"));
         assert!(arguments.contains("--property=ReadWritePaths="));
