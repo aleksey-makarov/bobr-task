@@ -11,7 +11,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Start a worker task from the current ZeroClaw coordinator session.
-    Start,
+    Start {
+        /// Short one- or two-word name for the task.
+        label: String,
+    },
     /// Report task state.
     Status { task_id: String },
     /// Print a completed task result.
@@ -26,7 +29,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Start => bobr_task::start().await,
+        Command::Start { label } => bobr_task::start(&label).await,
         Command::Status { task_id } => bobr_task::status(&task_id).await,
         Command::Result { task_id } => bobr_task::result(&task_id),
         Command::Cancel { task_id } => bobr_task::cancel(&task_id).await,

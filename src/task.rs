@@ -1,14 +1,14 @@
-use crate::config::{canonical_task_root, validate_task_id};
+use crate::config::{canonical_task_root, validate_task_id, validate_task_label};
 use crate::rpc::TurnComplete;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -71,9 +71,30 @@ impl TaskStore {
         })
     }
 
-    pub fn create(&self, coordinator_session_id: &str, request: &str) -> Result<TaskRecord> {
-        for _ in 0..8 {
-            let id = Uuid::new_v4().simple().to_string();
+    pub fn create(
+        &self,
+        label: &str,
+        coordinator_session_id: &str,
+        request: &str,
+    ) -> Result<TaskRecord> {
+        validate_task_label(label)?;
+        let timestamp = local_timestamp(SystemTime::now())?;
+        self.create_with_timestamp(label, coordinator_session_id, request, &timestamp)
+    }
+
+    fn create_with_timestamp(
+        &self,
+        label: &str,
+        coordinator_session_id: &str,
+        request: &str,
+        timestamp: &str,
+    ) -> Result<TaskRecord> {
+        for collision in 1..=999 {
+            let id = if collision == 1 {
+                format!("{timestamp}.{label}")
+            } else {
+                format!("{timestamp}.{label}.{collision}")
+            };
             let task_dir = self.root.join(&id);
             let mut builder = fs::DirBuilder::new();
             builder.mode(0o700);
@@ -89,7 +110,10 @@ impl TaskStore {
                         id: id.clone(),
                         coordinator_session_id: coordinator_session_id.to_owned(),
                         worker_session_id: None,
-                        controller_unit: format!("bobr-task-{id}-controller.service"),
+                        controller_unit: format!(
+                            "bobr-task-{}-controller.service",
+                            runtime_name(&id)
+                        ),
                         created_unix_ms: SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .context("system clock precedes Unix epoch")?
@@ -103,7 +127,7 @@ impl TaskStore {
                 Err(error) => return Err(error).context("create task directory"),
             }
         }
-        bail!("failed to allocate a unique task ID")
+        bail!("failed to allocate a unique task ID for '{timestamp}.{label}'")
     }
 
     pub fn task_dir(&self, task_id: &str) -> Result<PathBuf> {
@@ -168,6 +192,39 @@ impl TaskStore {
     }
 }
 
+pub fn runtime_name(task_id: &str) -> String {
+    task_id.replace('.', "-")
+}
+
+fn local_timestamp(now: SystemTime) -> Result<String> {
+    let seconds: libc::time_t = now
+        .duration_since(UNIX_EPOCH)
+        .context("system clock precedes Unix epoch")?
+        .as_secs()
+        .try_into()
+        .context("system time does not fit time_t")?;
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: `seconds` and `local` are valid pointers for the duration of the
+    // call, and localtime_r initializes `local` on success.
+    if unsafe { libc::localtime_r(&seconds, local.as_mut_ptr()) }.is_null() {
+        bail!("failed to convert system time to local time");
+    }
+    // SAFETY: localtime_r succeeded and initialized the value above.
+    let local = unsafe { local.assume_init() };
+    let mut output = [0 as libc::c_char; 13];
+    let format = c"%y%m%d%H%M%S";
+    // SAFETY: all pointers refer to valid objects and `output` has room for
+    // twelve formatted digits plus the terminating NUL byte.
+    if unsafe { libc::strftime(output.as_mut_ptr(), output.len(), format.as_ptr(), &local) } != 12 {
+        bail!("failed to format local task timestamp");
+    }
+    // SAFETY: strftime wrote a terminating NUL byte on success.
+    Ok(unsafe { CStr::from_ptr(output.as_ptr()) }
+        .to_str()
+        .context("local task timestamp is not UTF-8")?
+        .to_owned())
+}
+
 pub fn append_json_line(path: &Path, value: &Value) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -215,7 +272,11 @@ mod tests {
     fn creates_private_task_and_round_trips_metadata() {
         let dir = tempdir().unwrap();
         let store = TaskStore::new(dir.path()).unwrap();
-        let record = store.create("coordinator", "request").unwrap();
+        let record = store
+            .create("create-hello", "coordinator", "request")
+            .unwrap();
+        assert!(record.id.ends_with(".create-hello"));
+        assert!(record.id[..12].bytes().all(|byte| byte.is_ascii_digit()));
         let loaded = store.read_record(&record.id).unwrap();
         assert_eq!(loaded.coordinator_session_id, "coordinator");
         assert_eq!(loaded.request, "request");
@@ -232,22 +293,53 @@ mod tests {
     fn rejects_symlink_task_directories() {
         let dir = tempdir().unwrap();
         let outside = tempdir().unwrap();
-        symlink(outside.path(), dir.path().join("bad")).unwrap();
+        let task_id = "261110184237.bad";
+        symlink(outside.path(), dir.path().join(task_id)).unwrap();
         let store = TaskStore::new(dir.path()).unwrap();
-        assert!(store.task_dir("bad").is_err());
+        assert!(store.task_dir(task_id).is_err());
     }
 
     #[test]
     fn result_is_written_atomically() {
         let dir = tempdir().unwrap();
         let store = TaskStore::new(dir.path()).unwrap();
-        let record = store.create("coordinator", "request").unwrap();
+        let record = store
+            .create("cancel-task", "coordinator", "request")
+            .unwrap();
         store
             .write_result(&record.id, &TaskResult::cancelled(&record.id))
             .unwrap();
         assert_eq!(
             store.read_result(&record.id).unwrap().unwrap().outcome,
             "cancelled"
+        );
+    }
+
+    #[test]
+    fn adds_a_numeric_suffix_to_same_second_collisions() {
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let first = store
+            .create_with_timestamp("same-task", "coordinator", "one", "261110184237")
+            .unwrap();
+        let second = store
+            .create_with_timestamp("same-task", "coordinator", "two", "261110184237")
+            .unwrap();
+        assert_eq!(second.id, format!("{}.2", first.id));
+    }
+
+    #[test]
+    fn formats_local_time_as_twelve_digits() {
+        let timestamp = local_timestamp(SystemTime::now()).unwrap();
+        assert_eq!(timestamp.len(), 12);
+        assert!(timestamp.bytes().all(|byte| byte.is_ascii_digit()));
+    }
+
+    #[test]
+    fn runtime_names_do_not_expose_task_id_separators() {
+        assert_eq!(
+            runtime_name("261110184237.create-hello.2"),
+            "261110184237-create-hello-2"
         );
     }
 }

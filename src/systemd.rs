@@ -151,7 +151,8 @@ mod tests {
     async fn start_controller_invokes_systemd_run_with_task_isolation() {
         let dir = tempdir().unwrap();
         let task_root = dir.path().join("tasks");
-        let task_dir = task_root.join("task-1");
+        let task_id = "261110184237.test-task";
+        let task_dir = task_root.join(task_id);
         fs::create_dir_all(task_dir.join("workspace/home")).unwrap();
         let arguments = dir.path().join("arguments");
         let fake = dir.path().join("systemd-run");
@@ -173,10 +174,10 @@ mod tests {
         };
         let task = TaskRecord {
             schema_version: 1,
-            id: "task-1".into(),
+            id: task_id.into(),
             coordinator_session_id: "coordinator".into(),
             worker_session_id: None,
-            controller_unit: "bobr-task-task-1-controller.service".into(),
+            controller_unit: "bobr-task-261110184237-test-task-controller.service".into(),
             created_unix_ms: 0,
             request: "test".into(),
         };
@@ -191,6 +192,6 @@ mod tests {
         assert!(arguments.contains("--property=ProtectSystem=strict\n"));
         assert!(arguments.contains("--property=ReadWritePaths="));
         assert!(arguments.contains("--setenv=PATH="));
-        assert!(arguments.ends_with("controller\ntask-1\n"));
+        assert!(arguments.ends_with("controller\n261110184237.test-task\n"));
     }
 }

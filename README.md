@@ -8,13 +8,16 @@ the controller runs as a transient user systemd unit.
 The initial interface is:
 
 ```text
-bobr-task start
+bobr-task start <short-label>
 bobr-task status <task-id>
 bobr-task result <task-id>
 bobr-task cancel <task-id>
 ```
 
-`start` reads the current coordinator session ID from
+The coordinator supplies a one- or two-word lowercase label such as
+`create-hello`. `start` combines it with local time to create a naturally
+sortable task ID such as `261110184237.create-hello`; a same-second collision
+gets a numeric suffix. It then reads the current coordinator session ID from
 `ZEROCLAW_SESSION_ID`. It retrieves recent conversation messages over the
 local ZeroClaw RPC socket, so user text is never interpolated into a shell
 command.

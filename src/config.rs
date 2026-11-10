@@ -43,13 +43,40 @@ fn env_path(name: &str, default: &str) -> PathBuf {
 }
 
 pub fn validate_task_id(task_id: &str) -> Result<()> {
-    if task_id.is_empty()
-        || task_id.len() > 64
-        || !task_id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
+    let Some((timestamp, rest)) = task_id.split_once('.') else {
         bail!("invalid task ID '{task_id}'");
+    };
+    if timestamp.len() != 12 || !timestamp.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("invalid task ID '{task_id}'");
+    }
+    let (label, suffix) = match rest.split_once('.') {
+        Some((label, suffix)) => (label, Some(suffix)),
+        None => (rest, None),
+    };
+    validate_task_label(label)?;
+    if suffix.is_some_and(|suffix| {
+        suffix.is_empty()
+            || suffix.starts_with('0')
+            || !matches!(suffix.parse::<u32>(), Ok(number) if number >= 2)
+    }) {
+        bail!("invalid task ID '{task_id}'");
+    }
+    Ok(())
+}
+
+pub fn validate_task_label(label: &str) -> Result<()> {
+    let words: Vec<_> = label.split('-').collect();
+    if label.is_empty()
+        || label.len() > 24
+        || !(1..=2).contains(&words.len())
+        || words.iter().any(|word| {
+            word.is_empty()
+                || !word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+    {
+        bail!("invalid task label '{label}'; expected one or two lowercase words");
     }
     Ok(())
 }
@@ -70,12 +97,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_path_safe_task_ids() {
-        for value in ["abc", "a1-b2", "0123456789abcdef"] {
+    fn accepts_structured_task_ids() {
+        for value in [
+            "261110184237.release",
+            "261110184237.create-hello",
+            "261110184237.create-hello.2",
+            "261110184237.create-hello.19",
+        ] {
             validate_task_id(value).unwrap();
         }
-        for value in ["", "../x", "A", "a_b", "a/b", "."] {
+        for value in [
+            "",
+            "26111018423.create-hello",
+            "261110184237",
+            "261110184237.Create-hello",
+            "261110184237.create_three_words",
+            "261110184237.create-three-words",
+            "261110184237.create-hello.0",
+            "261110184237.create-hello.02",
+            "261110184237.create-hello.extra",
+            "../261110184237.create-hello",
+        ] {
             assert!(validate_task_id(value).is_err(), "accepted {value:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_short_task_labels() {
+        for value in ["release", "create-hello", "fix-tls2"] {
+            validate_task_label(value).unwrap();
+        }
+        for value in [
+            "",
+            "Create-hello",
+            "create_hello",
+            "create-three-words",
+            "this-label-is-much-too-long",
+        ] {
+            assert!(validate_task_label(value).is_err(), "accepted {value:?}");
         }
     }
 }

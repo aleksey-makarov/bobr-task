@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 use systemd::Systemd;
-use task::{TaskResult, TaskStore};
+use task::{TaskResult, TaskStore, runtime_name};
 
 /// Environment variable installed by ZeroClaw's shell tool for the active
 /// coordinator session.
@@ -42,7 +42,7 @@ struct CancelOutput<'a> {
 }
 
 /// Start a task from the current ZeroClaw coordinator session.
-pub async fn start() -> Result<()> {
+pub async fn start(label: &str) -> Result<()> {
     let config = Config::from_env()?;
     let coordinator_session_id = env::var(ZEROCLAW_SESSION_ID)
         .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
@@ -52,7 +52,7 @@ pub async fn start() -> Result<()> {
     let request = build_worker_request(&messages)?;
 
     let store = TaskStore::new(&config.task_root)?;
-    let record = store.create(&coordinator_session_id, &request)?;
+    let record = store.create(label, &coordinator_session_id, &request)?;
     let systemd = Systemd::new(&config);
 
     if let Err(error) = systemd
@@ -188,7 +188,7 @@ async fn controller_inner(
     rpc_env.insert("PATH".to_owned(), path);
 
     let mut rpc = RpcClient::connect(&config.rpc_socket, rpc_env).await?;
-    let worker_session_id = format!("bobr-task-{task_id}");
+    let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
     rpc.session_new(&config.worker_alias, &worker_session_id, &workspace)
         .await?;
     record.worker_session_id = Some(worker_session_id.clone());
