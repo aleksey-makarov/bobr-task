@@ -124,7 +124,7 @@ impl Systemd {
             .arg(format!("--unit={unit}"))
             .arg("--property=Type=exec")
             .arg("--property=KillSignal=SIGINT")
-            .arg("--property=KillMode=control-group")
+            .arg("--property=KillMode=mixed")
             .arg("--property=TimeoutStopSec=30s")
             .arg("--property=UMask=0022")
             .arg(format!(
@@ -320,7 +320,7 @@ mod tests {
             "--collect\n",
             "--unit=bobr-task-261110184237-test-task-command.service\n",
             "--property=KillSignal=SIGINT\n",
-            "--property=KillMode=control-group\n",
+            "--property=KillMode=mixed\n",
             "--property=TimeoutStopSec=30s\n",
             "--property=UMask=0022\n",
             "--setenv=BOBR_TASK_ID=261110184237.test-task\n",
