@@ -23,9 +23,15 @@ impl Systemd {
         }
     }
 
-    pub async fn start_controller(&self, task: &TaskRecord, executable: &Path) -> Result<()> {
+    pub async fn start_controller(
+        &self,
+        task: &TaskRecord,
+        executable: &Path,
+        worker_base_path: &str,
+    ) -> Result<()> {
         let task_dir = self.task_root.join(&task.id);
         let home = task_dir.join("workspace/home");
+        let tmp = task_dir.join("workspace/tmp");
         let path = std::env::var("PATH").context("PATH is not set")?;
         let mut command = self.user_command(&self.systemd_run);
         command
@@ -41,7 +47,9 @@ impl Systemd {
             .arg(format!("--property=ReadWritePaths={}", task_dir.display()))
             .arg(format!("--working-directory={}", task_dir.display()))
             .arg(format!("--setenv=HOME={}", home.display()))
+            .arg(format!("--setenv=TMPDIR={}", tmp.display()))
             .arg(format!("--setenv=PATH={path}"))
+            .arg(format!("--setenv=BOBR_TASK_BASE_PATH={worker_base_path}"))
             .arg(format!(
                 "--setenv=BOBR_TASK_ROOT={}",
                 self.task_root.display()
@@ -154,6 +162,7 @@ mod tests {
         let task_id = "261110184237.test-task";
         let task_dir = task_root.join(task_id);
         fs::create_dir_all(task_dir.join("workspace/home")).unwrap();
+        fs::create_dir_all(task_dir.join("workspace/tmp")).unwrap();
         let arguments = dir.path().join("arguments");
         let fake = dir.path().join("systemd-run");
         fs::write(
@@ -183,7 +192,11 @@ mod tests {
         };
 
         Systemd::new(&config)
-            .start_controller(&task, Path::new("/nix/store/bobr-task/bin/bobr-task"))
+            .start_controller(
+                &task,
+                Path::new("/nix/store/bobr-task/bin/bobr-task"),
+                "/run/wrappers/bin:/nix/store/agent/bin",
+            )
             .await
             .unwrap();
 
@@ -192,6 +205,11 @@ mod tests {
         assert!(arguments.contains("--property=ProtectSystem=strict\n"));
         assert!(arguments.contains("--property=ReadWritePaths="));
         assert!(arguments.contains("--setenv=PATH="));
+        assert!(arguments.contains("--setenv=TMPDIR="));
+        assert!(
+            arguments
+                .contains("--setenv=BOBR_TASK_BASE_PATH=/run/wrappers/bin:/nix/store/agent/bin\n")
+        );
         assert!(arguments.ends_with("controller\n261110184237.test-task\n"));
     }
 }

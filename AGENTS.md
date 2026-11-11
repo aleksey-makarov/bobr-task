@@ -13,6 +13,9 @@ Keep these invariants explicit:
   syntax;
 - ZeroClaw remains the authority for agent sessions and systemd remains the
   authority for processes;
+- worker `HOME`, `TMPDIR`, and `PATH` are constructed explicitly; the base
+  `PATH` comes from `BOBR_TASK_BASE_PATH`, never from the daemon's ambient
+  environment;
 - do not add a daemon, registry, scheduler, compatibility layer, or optional
   backend without a current use case;
 - RPC and systemd interactions must be covered by fakes in tests;

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub const DEFAULT_TASK_ROOT: &str = "/mnt/zeroclaw/bobr-tasks";
 pub const DEFAULT_RPC_SOCKET: &str = "/mnt/zeroclaw/.zeroclaw/data/daemon.sock";
 pub const DEFAULT_WORKER_ALIAS: &str = "bobr_worker";
+pub const BOBR_TASK_BASE_PATH: &str = "BOBR_TASK_BASE_PATH";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -13,6 +14,24 @@ pub struct Config {
     pub worker_alias: String,
     pub systemd_run: PathBuf,
     pub systemctl: PathBuf,
+}
+
+pub fn worker_base_path() -> Result<String> {
+    let value = env::var(BOBR_TASK_BASE_PATH)
+        .with_context(|| format!("{BOBR_TASK_BASE_PATH} is not set"))?;
+    validate_worker_base_path(&value)?;
+    Ok(value)
+}
+
+fn validate_worker_base_path(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value
+            .split(':')
+            .any(|entry| entry.is_empty() || !PathBuf::from(entry).is_absolute())
+    {
+        bail!("{BOBR_TASK_BASE_PATH} must contain only non-empty absolute paths");
+    }
+    Ok(())
 }
 
 impl Config {
@@ -135,6 +154,22 @@ mod tests {
             "this-label-is-much-too-long",
         ] {
             assert!(validate_task_label(value).is_err(), "accepted {value:?}");
+        }
+    }
+
+    #[test]
+    fn worker_base_path_requires_absolute_entries() {
+        for value in [
+            "/nix/store/agent/bin",
+            "/run/wrappers/bin:/nix/store/agent/bin",
+        ] {
+            validate_worker_base_path(value).unwrap();
+        }
+        for value in ["", "bin", "/run/wrappers/bin:", ":/nix/store/agent/bin"] {
+            assert!(
+                validate_worker_base_path(value).is_err(),
+                "accepted {value:?}"
+            );
         }
     }
 }

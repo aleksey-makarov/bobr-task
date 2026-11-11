@@ -105,6 +105,9 @@ impl TaskStore {
                     workspace_builder
                         .create(task_dir.join("workspace/home"))
                         .context("create task workspace")?;
+                    workspace_builder
+                        .create(task_dir.join("workspace/tmp"))
+                        .context("create task temporary directory")?;
                     let record = TaskRecord {
                         schema_version: SCHEMA_VERSION,
                         id: id.clone(),
@@ -287,6 +290,15 @@ mod tests {
                 & 0o777,
             0o700
         );
+        for directory in ["workspace/home", "workspace/tmp"] {
+            assert_eq!(
+                fs::metadata(store.task_dir(&record.id).unwrap().join(directory))
+                    .unwrap()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
     }
 
     #[test]

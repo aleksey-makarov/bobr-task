@@ -24,6 +24,11 @@ suffix. It reads the current coordinator session ID from
 never reconstructs a request from conversation history. User text is read
 from the file rather than interpolated into a shell command.
 
+The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
+directories. A worker receives only its task-local `~/.local/bin` and
+`~/.cargo/bin` followed by that base path; it does not inherit the daemon's
+ambient `PATH`. Its `HOME` and `TMPDIR` also point inside the task workspace.
+
 This project currently targets the ZeroClaw 0.8.6 local JSON-RPC interface.
 
 ## Development

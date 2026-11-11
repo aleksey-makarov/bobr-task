@@ -6,7 +6,7 @@ mod systemd;
 mod task;
 
 use anyhow::{Context, Result, anyhow, bail};
-use config::Config;
+use config::{Config, worker_base_path};
 use rpc::{RpcClient, TurnComplete};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -49,6 +49,7 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
         .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
     let coordinator_workspace = env::current_dir().context("resolve coordinator workspace")?;
     let request = read_request_file(&coordinator_workspace, request_file)?;
+    let worker_base_path = worker_base_path()?;
 
     let store = TaskStore::new(&config.task_root)?;
     let record = store.create(label, &coordinator_session_id, &request)?;
@@ -58,6 +59,7 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
         .start_controller(
             &record,
             &env::current_exe().context("locate bobr-task executable")?,
+            &worker_base_path,
         )
         .await
     {
@@ -181,9 +183,11 @@ async fn controller_inner(
     let task_dir = store.task_dir(task_id)?;
     let workspace = store.workspace_dir(task_id)?;
     let home = workspace.join("home");
-    let path = task_path(&home);
+    let tmp = workspace.join("tmp");
+    let path = task_path(&home, &worker_base_path()?);
     let mut rpc_env = HashMap::new();
     rpc_env.insert("HOME".to_owned(), home.display().to_string());
+    rpc_env.insert("TMPDIR".to_owned(), tmp.display().to_string());
     rpc_env.insert("PATH".to_owned(), path);
 
     let mut rpc = RpcClient::connect(&config.rpc_socket, rpc_env).await?;
@@ -201,9 +205,12 @@ async fn controller_inner(
     .await
 }
 
-fn task_path(home: &Path) -> String {
-    let inherited = env::var("PATH").unwrap_or_else(|_| "/run/current-system/sw/bin".to_owned());
-    format!("{}/.local/bin:{inherited}", home.display())
+fn task_path(home: &Path, base_path: &str) -> String {
+    format!(
+        "{}/.local/bin:{}/.cargo/bin:{base_path}",
+        home.display(),
+        home.display()
+    )
 }
 
 fn read_request_file(coordinator_workspace: &Path, request_file: &Path) -> Result<String> {
@@ -311,5 +318,18 @@ mod tests {
         assert!(prompt.contains("TASK:\nInvestigate the Bobr scheduler."));
         assert!(!prompt.contains("coordinator conversation"));
         assert!(!prompt.contains("USER:"));
+    }
+
+    #[test]
+    fn task_path_uses_only_task_local_bins_and_the_explicit_base() {
+        assert_eq!(
+            task_path(
+                Path::new("/tasks/example/workspace/home"),
+                "/run/wrappers/bin:/nix/store/agent/bin"
+            ),
+            "/tasks/example/workspace/home/.local/bin:\
+/tasks/example/workspace/home/.cargo/bin:\
+/run/wrappers/bin:/nix/store/agent/bin"
+        );
     }
 }
