@@ -15,7 +15,7 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ./Cargo.lock;
 
   meta = {
-    description = "Task launcher connecting ZeroClaw workers to isolated Bobr workspaces";
+    description = "Task launcher connecting ZeroClaw workers to task-local Bobr workspaces";
     homepage = "https://github.com/aleksey-makarov/bobr-task";
     license = with lib.licenses; [
       asl20

@@ -7,11 +7,12 @@ mod task;
 
 use anyhow::{Context, Result, anyhow, bail};
 use config::Config;
-use rpc::{Message, RpcClient, TurnComplete};
+use rpc::{RpcClient, TurnComplete};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
-use std::path::Path;
+use std::fs;
+use std::path::{Component, Path};
 use systemd::Systemd;
 use task::{TaskResult, TaskStore, runtime_name};
 
@@ -42,14 +43,12 @@ struct CancelOutput<'a> {
 }
 
 /// Start a task from the current ZeroClaw coordinator session.
-pub async fn start(label: &str) -> Result<()> {
+pub async fn start(label: &str, request_file: &Path) -> Result<()> {
     let config = Config::from_env()?;
     let coordinator_session_id = env::var(ZEROCLAW_SESSION_ID)
         .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
-
-    let mut rpc = RpcClient::connect(&config.rpc_socket, HashMap::new()).await?;
-    let messages = rpc.session_messages(&coordinator_session_id, 20).await?;
-    let request = build_worker_request(&messages)?;
+    let coordinator_workspace = env::current_dir().context("resolve coordinator workspace")?;
+    let request = read_request_file(&coordinator_workspace, request_file)?;
 
     let store = TaskStore::new(&config.task_root)?;
     let record = store.create(label, &coordinator_session_id, &request)?;
@@ -195,7 +194,8 @@ async fn controller_inner(
     store.write_record(&record)?;
 
     let log_path = task_dir.join("controller.log");
-    rpc.session_prompt(&worker_session_id, &record.request, |frame| {
+    let prompt = build_worker_prompt(&record.request);
+    rpc.session_prompt(&worker_session_id, &prompt, |frame| {
         task::append_json_line(&log_path, frame)
     })
     .await
@@ -206,29 +206,58 @@ fn task_path(home: &Path) -> String {
     format!("{}/.local/bin:{inherited}", home.display())
 }
 
-fn build_worker_request(messages: &[Message]) -> Result<String> {
-    let conversation: Vec<_> = messages
-        .iter()
-        .filter(|message| message.kind == "message")
-        .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
-        .filter(|message| !message.content.trim().is_empty())
-        .collect();
-    if conversation.is_empty() {
-        bail!("the coordinator session contains no user conversation");
+fn read_request_file(coordinator_workspace: &Path, request_file: &Path) -> Result<String> {
+    if request_file.is_absolute()
+        || request_file.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("request file must be a relative path below the coordinator workspace");
     }
 
-    let mut request = String::from(
-        "You are bobr_worker. Work only inside the task workspace supplied as your current directory.\n\
-         The recent coordinator conversation is included below. Treat the latest exchange as the task and earlier messages only as context.\n\
-         Do not access parent or sibling task directories.\n\n",
-    );
-    for message in conversation {
-        request.push_str(&message.role.to_ascii_uppercase());
-        request.push_str(":\n");
-        request.push_str(message.content.trim());
-        request.push_str("\n\n");
+    let workspace = fs::canonicalize(coordinator_workspace).with_context(|| {
+        format!(
+            "resolve coordinator workspace '{}'",
+            coordinator_workspace.display()
+        )
+    })?;
+    let unresolved = workspace.join(request_file);
+    let metadata = fs::symlink_metadata(&unresolved)
+        .with_context(|| format!("inspect request file '{}'", unresolved.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!(
+            "request file '{}' is not a regular file",
+            unresolved.display()
+        );
     }
-    Ok(request)
+    let resolved = fs::canonicalize(&unresolved)
+        .with_context(|| format!("resolve request file '{}'", unresolved.display()))?;
+    if !resolved.starts_with(&workspace) {
+        bail!(
+            "request file '{}' escapes the coordinator workspace",
+            unresolved.display()
+        );
+    }
+
+    let request = fs::read_to_string(&resolved)
+        .with_context(|| format!("read request file '{}'", resolved.display()))?;
+    let request = request.trim();
+    if request.is_empty() {
+        bail!("request file '{}' is empty", resolved.display());
+    }
+    Ok(request.to_owned())
+}
+
+fn build_worker_prompt(request: &str) -> String {
+    format!(
+        "You are bobr_worker. Your current directory, HOME, and PATH are dedicated to this task.\n\
+         Work only on the task below. Do not inspect or modify parent or sibling task directories.\n\
+         Work non-interactively: make reasonable assumptions, and report a blocker in the final result if the task cannot be completed.\n\n\
+         TASK:\n{request}\n"
+    )
 }
 
 fn print_json(value: &impl Serialize) -> Result<()> {
@@ -241,27 +270,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_request_keeps_conversation_and_discards_tools() {
-        let messages = vec![
-            Message {
-                role: "user".into(),
-                content: "Investigate Bobr".into(),
-                kind: "message".into(),
-            },
-            Message {
-                role: "assistant".into(),
-                content: "tool noise".into(),
-                kind: "tool_call".into(),
-            },
-            Message {
-                role: "assistant".into(),
-                content: "I will check it".into(),
-                kind: "message".into(),
-            },
-        ];
-        let request = build_worker_request(&messages).unwrap();
-        assert!(request.contains("USER:\nInvestigate Bobr"));
-        assert!(request.contains("ASSISTANT:\nI will check it"));
-        assert!(!request.contains("tool noise"));
+    fn reads_a_request_below_the_coordinator_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir(workspace.path().join("requests")).unwrap();
+        fs::write(
+            workspace.path().join("requests/update-gzip.md"),
+            "  Update gzip and run its tests.\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_request_file(workspace.path(), Path::new("requests/update-gzip.md")).unwrap(),
+            "Update gzip and run its tests."
+        );
+    }
+
+    #[test]
+    fn rejects_request_paths_outside_the_coordinator_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+
+        assert!(read_request_file(workspace.path(), outside.path()).is_err());
+        assert!(read_request_file(workspace.path(), Path::new("../request.md")).is_err());
+    }
+
+    #[test]
+    fn rejects_a_symlink_request_file() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        fs::write(workspace.path().join("real.md"), "task").unwrap();
+        symlink("real.md", workspace.path().join("request.md")).unwrap();
+
+        assert!(read_request_file(workspace.path(), Path::new("request.md")).is_err());
+    }
+
+    #[test]
+    fn worker_prompt_contains_only_the_explicit_request_and_preamble() {
+        let prompt = build_worker_prompt("Investigate the Bobr scheduler.");
+        assert!(prompt.contains("TASK:\nInvestigate the Bobr scheduler."));
+        assert!(!prompt.contains("coordinator conversation"));
+        assert!(!prompt.contains("USER:"));
     }
 }

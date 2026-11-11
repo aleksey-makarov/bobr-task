@@ -1,14 +1,16 @@
 # AGENTS.md
 
 `bobr-task` is a narrow host-side adapter between a ZeroClaw coordinator,
-isolated Bobr task directories, and transient user systemd units.
+task-local Bobr state, and transient user systemd units.
 
 Keep these invariants explicit:
 
 - one task owns exactly one directory below the configured task root;
 - task IDs are validated before they are used in paths or unit names;
-- the coordinator invokes `bobr-task start <short-label>`; the label is its own
-  one- or two-word summary, and arbitrary user text never becomes shell syntax;
+- the coordinator invokes `bobr-task start <short-label> <request-file>`; the
+  label is its own one- or two-word summary, the request is a regular UTF-8 file
+  below the coordinator workspace, and arbitrary user text never becomes shell
+  syntax;
 - ZeroClaw remains the authority for agent sessions and systemd remains the
   authority for processes;
 - do not add a daemon, registry, scheduler, compatibility layer, or optional

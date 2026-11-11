@@ -6,18 +6,6 @@ use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::net::UnixStream;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-    #[serde(default = "default_message_kind")]
-    pub kind: String,
-}
-
-fn default_message_kind() -> String {
-    "message".to_owned()
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct TurnComplete {
     pub outcome: String,
@@ -54,20 +42,6 @@ impl RpcClient {
             .await
             .context("initialize ZeroClaw RPC connection")?;
         Ok(client)
-    }
-
-    pub async fn session_messages(
-        &mut self,
-        session_id: &str,
-        limit: usize,
-    ) -> Result<Vec<Message>> {
-        let value = self
-            .call(
-                "session/messages",
-                json!({"session_id": session_id, "limit": limit}),
-            )
-            .await?;
-        serde_json::from_value(value["messages"].clone()).context("decode session messages")
     }
 
     pub async fn session_new(
@@ -201,33 +175,6 @@ mod tests {
         encoded.push(b'\n');
         writer.write_all(&encoded).await.unwrap();
         writer.flush().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn reads_messages_from_a_fake_rpc_server() {
-        let (client_stream, server_stream) = tokio::io::duplex(8192);
-        let server = tokio::spawn(async move {
-            let (reader, mut writer) = tokio::io::split(server_stream);
-            let mut lines = BufReader::new(reader).lines();
-            let init = read_request(&mut lines).await;
-            assert_eq!(init["method"], "initialize");
-            send(&mut writer, json!({"jsonrpc":"2.0","id":1,"result":{}})).await;
-            let messages = read_request(&mut lines).await;
-            assert_eq!(messages["method"], "session/messages");
-            send(
-                &mut writer,
-                json!({"jsonrpc":"2.0","id":2,"result":{"messages":[{"role":"user","content":"hello","kind":"message"}]}}),
-            )
-            .await;
-        });
-
-        let (reader, writer) = tokio::io::split(client_stream);
-        let mut client = RpcClient::from_io(Box::new(reader), Box::new(writer), HashMap::new())
-            .await
-            .unwrap();
-        let messages = client.session_messages("coordinator", 20).await.unwrap();
-        assert_eq!(messages[0].content, "hello");
-        server.await.unwrap();
     }
 
     #[tokio::test]

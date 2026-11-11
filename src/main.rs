@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -14,6 +15,8 @@ enum Command {
     Start {
         /// Short one- or two-word name for the task.
         label: String,
+        /// UTF-8 task request below the coordinator workspace.
+        request_file: PathBuf,
     },
     /// Report task state.
     Status { task_id: String },
@@ -29,7 +32,10 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Start { label } => bobr_task::start(&label).await,
+        Command::Start {
+            label,
+            request_file,
+        } => bobr_task::start(&label, &request_file).await,
         Command::Status { task_id } => bobr_task::status(&task_id).await,
         Command::Result { task_id } => bobr_task::result(&task_id),
         Command::Cancel { task_id } => bobr_task::cancel(&task_id).await,
