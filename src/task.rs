@@ -199,6 +199,10 @@ pub fn runtime_name(task_id: &str) -> String {
     task_id.replace('.', "-")
 }
 
+pub fn command_unit(task_id: &str) -> String {
+    format!("bobr-task-{}-command.service", runtime_name(task_id))
+}
+
 fn local_timestamp(now: SystemTime) -> Result<String> {
     let seconds: libc::time_t = now
         .duration_since(UNIX_EPOCH)
@@ -352,6 +356,10 @@ mod tests {
         assert_eq!(
             runtime_name("261110184237.create-hello.2"),
             "261110184237-create-hello-2"
+        );
+        assert_eq!(
+            command_unit("261110184237.create-hello.2"),
+            "bobr-task-261110184237-create-hello-2-command.service"
         );
     }
 }

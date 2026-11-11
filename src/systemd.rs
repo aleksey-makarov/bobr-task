@@ -1,7 +1,9 @@
 use crate::config::{Config, current_uid};
-use crate::task::TaskRecord;
+use crate::task::{TaskRecord, command_unit};
 use anyhow::{Context, Result, bail};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use tokio::process::Command;
 
 pub struct Systemd {
@@ -97,6 +99,55 @@ impl Systemd {
         }
     }
 
+    pub async fn run_command(
+        &self,
+        task_id: &str,
+        executable: &Path,
+        workspace: &Path,
+        working_directory: &Path,
+        path: &str,
+        argv: &[OsString],
+    ) -> Result<ExitStatus> {
+        if argv.is_empty() {
+            bail!("command must not be empty");
+        }
+        let unit = command_unit(task_id);
+        let home = workspace.join("home");
+        let tmp = workspace.join("tmp");
+        let mut command = self.user_command(&self.systemd_run);
+        command
+            .arg("--user")
+            .arg("--quiet")
+            .arg("--wait")
+            .arg("--pipe")
+            .arg("--collect")
+            .arg(format!("--unit={unit}"))
+            .arg("--property=Type=exec")
+            .arg("--property=KillSignal=SIGINT")
+            .arg("--property=KillMode=control-group")
+            .arg("--property=TimeoutStopSec=30s")
+            .arg("--property=UMask=0022")
+            .arg(format!(
+                "--working-directory={}",
+                working_directory.display()
+            ))
+            .arg(format!("--setenv=HOME={}", home.display()))
+            .arg(format!("--setenv=TMPDIR={}", tmp.display()))
+            .arg(format!("--setenv=PATH={path}"))
+            .arg(format!("--setenv=BOBR_TASK_ID={task_id}"))
+            .arg(format!(
+                "--setenv=BOBR_TASK_ROOT={}",
+                self.task_root.display()
+            ))
+            .arg(executable)
+            .arg("exec")
+            .arg(task_id)
+            .arg("--")
+            .args(argv);
+        let status = command.status().await.context("run command unit")?;
+        Ok(status)
+    }
+
     pub async fn stop_unit(&self, unit: &str) -> Result<()> {
         let output = self
             .user_command(&self.systemctl)
@@ -105,7 +156,7 @@ impl Systemd {
             .arg(unit)
             .output()
             .await
-            .context("stop controller unit")?;
+            .context("stop user unit")?;
         if !output.status.success() {
             let message = String::from_utf8_lossy(&output.stderr);
             if !message.contains("not loaded") && !message.contains("not found") {
@@ -211,5 +262,112 @@ mod tests {
                 .contains("--setenv=BOBR_TASK_BASE_PATH=/run/wrappers/bin:/nix/store/agent/bin\n")
         );
         assert!(arguments.ends_with("controller\n261110184237.test-task\n"));
+    }
+
+    #[tokio::test]
+    async fn run_command_creates_one_cancellable_task_unit() {
+        let dir = tempdir().unwrap();
+        let task_root = dir.path().join("tasks");
+        let task_id = "261110184237.test-task";
+        let workspace = task_root.join(task_id).join("workspace");
+        let working_directory = workspace.join("bobr-recipes");
+        fs::create_dir_all(&working_directory).unwrap();
+        fs::create_dir_all(workspace.join("home")).unwrap();
+        fs::create_dir_all(workspace.join("tmp")).unwrap();
+        let arguments = dir.path().join("arguments");
+        let fake = dir.path().join("systemd-run");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                arguments.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = Config {
+            task_root: task_root.clone(),
+            rpc_socket: "/rpc.sock".into(),
+            worker_alias: "worker".into(),
+            systemd_run: fake,
+            systemctl: "systemctl".into(),
+        };
+        let argv = [
+            OsString::from("bin/bobr-build.sh"),
+            OsString::from("--target"),
+            OsString::from("world"),
+        ];
+
+        assert!(
+            Systemd::new(&config)
+                .run_command(
+                    task_id,
+                    Path::new("/nix/store/bobr-task/bin/bobr-task"),
+                    &workspace,
+                    &working_directory,
+                    "/task/home/.local/bin:/nix/store/agent/bin",
+                    &argv,
+                )
+                .await
+                .unwrap()
+                .success()
+        );
+
+        let arguments = fs::read_to_string(arguments).unwrap();
+        for expected in [
+            "--wait\n",
+            "--pipe\n",
+            "--collect\n",
+            "--unit=bobr-task-261110184237-test-task-command.service\n",
+            "--property=KillSignal=SIGINT\n",
+            "--property=KillMode=control-group\n",
+            "--property=TimeoutStopSec=30s\n",
+            "--property=UMask=0022\n",
+            "--setenv=BOBR_TASK_ID=261110184237.test-task\n",
+        ] {
+            assert!(arguments.contains(expected), "missing {expected:?}");
+        }
+        assert!(arguments.contains(&format!(
+            "--working-directory={}\n",
+            working_directory.display()
+        )));
+        assert!(
+            arguments.ends_with(
+                "exec\n261110184237.test-task\n--\nbin/bobr-build.sh\n--target\nworld\n"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_unit_uses_the_user_manager() {
+        let dir = tempdir().unwrap();
+        let arguments = dir.path().join("arguments");
+        let fake = dir.path().join("systemctl");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                arguments.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = Config {
+            task_root: dir.path().join("tasks"),
+            rpc_socket: "/rpc.sock".into(),
+            worker_alias: "worker".into(),
+            systemd_run: "systemd-run".into(),
+            systemctl: fake,
+        };
+
+        Systemd::new(&config)
+            .stop_unit("bobr-task-test-command.service")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(arguments).unwrap(),
+            "--user\nstop\nbobr-task-test-command.service\n"
+        );
     }
 }

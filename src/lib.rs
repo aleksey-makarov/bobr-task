@@ -11,14 +11,19 @@ use rpc::{RpcClient, TurnComplete};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
-use std::path::{Component, Path};
+use std::os::unix::process::CommandExt;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, ExitStatus};
 use systemd::Systemd;
-use task::{TaskResult, TaskStore, runtime_name};
+use task::{TaskResult, TaskStore, command_unit, runtime_name};
 
 /// Environment variable installed by ZeroClaw's shell tool for the active
 /// coordinator session.
 pub const ZEROCLAW_SESSION_ID: &str = "ZEROCLAW_SESSION_ID";
+/// Task selected by the launcher for a worker session.
+pub const BOBR_TASK_ID: &str = "BOBR_TASK_ID";
 
 #[derive(Debug, Serialize)]
 struct StartOutput<'a> {
@@ -121,7 +126,7 @@ pub fn result(task_id: &str) -> Result<()> {
     print_json(&result)
 }
 
-/// Cancel the worker turn and stop its controller unit.
+/// Cancel the active command, worker turn, and controller, in that order.
 pub async fn cancel(task_id: &str) -> Result<()> {
     let config = Config::from_env()?;
     let store = TaskStore::new(&config.task_root)?;
@@ -134,22 +139,60 @@ pub async fn cancel(task_id: &str) -> Result<()> {
         });
     }
 
+    let systemd = Systemd::new(&config);
+    systemd.stop_unit(&command_unit(task_id)).await?;
+
     if let Some(session_id) = record.worker_session_id.as_deref() {
         let mut rpc = RpcClient::connect(&config.rpc_socket, HashMap::new()).await?;
         rpc.session_abort(session_id).await?;
     }
 
-    Systemd::new(&config)
-        .stop_unit(&record.controller_unit)
-        .await?;
-    if store.read_result(task_id)?.is_none() {
-        store.write_result(task_id, &TaskResult::cancelled(task_id))?;
-    }
+    systemd.stop_unit(&record.controller_unit).await?;
+    store.write_result(task_id, &TaskResult::cancelled(task_id))?;
 
     print_json(&CancelOutput {
         task_id,
         state: "cancelled",
     })
+}
+
+/// Run one long-lived command in the current task's transient command unit.
+pub async fn run(command: &[OsString]) -> Result<ExitStatus> {
+    let config = Config::from_env()?;
+    let task_id = env::var(BOBR_TASK_ID)
+        .context("BOBR_TASK_ID is not set; run bobr-task run from a worker session")?;
+    let store = TaskStore::new(&config.task_root)?;
+    store.read_record(&task_id)?;
+    let workspace = task_workspace(&store, &task_id)?;
+    let working_directory = task_working_directory(&workspace)?;
+    let path = env::var("PATH").context("PATH is not set")?;
+
+    Systemd::new(&config)
+        .run_command(
+            &task_id,
+            &env::current_exe().context("locate bobr-task executable")?,
+            &workspace,
+            &working_directory,
+            &path,
+            command,
+        )
+        .await
+}
+
+/// Replace the transient command unit's main process with the requested
+/// command. This is an internal entry point used only by `bobr-task run`.
+pub fn exec(task_id: &str, command: &[OsString]) -> Result<()> {
+    let config = Config::from_env()?;
+    let store = TaskStore::new(&config.task_root)?;
+    store.read_record(task_id)?;
+    let workspace = task_workspace(&store, task_id)?;
+    task_working_directory(&workspace)?;
+    if env::var(BOBR_TASK_ID).as_deref() != Ok(task_id) {
+        bail!("BOBR_TASK_ID does not match task '{task_id}'");
+    }
+    let program = command.first().context("command must not be empty")?;
+    let error = Command::new(program).args(&command[1..]).exec();
+    Err(error).with_context(|| format!("execute '{}'", program.to_string_lossy()))
 }
 
 /// Run the long-lived worker controller. This is an internal command started
@@ -189,6 +232,11 @@ async fn controller_inner(
     rpc_env.insert("HOME".to_owned(), home.display().to_string());
     rpc_env.insert("TMPDIR".to_owned(), tmp.display().to_string());
     rpc_env.insert("PATH".to_owned(), path);
+    rpc_env.insert(BOBR_TASK_ID.to_owned(), task_id.to_owned());
+    rpc_env.insert(
+        "BOBR_TASK_ROOT".to_owned(),
+        config.task_root.display().to_string(),
+    );
 
     let mut rpc = RpcClient::connect(&config.rpc_socket, rpc_env).await?;
     let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
@@ -262,9 +310,28 @@ fn build_worker_prompt(request: &str) -> String {
     format!(
         "You are bobr_worker. Your current directory, HOME, and PATH are dedicated to this task.\n\
          Work only on the task below. Do not inspect or modify parent or sibling task directories.\n\
+         Run long-lived builds and tests through `bobr-task run -- <command>`.\n\
          Work non-interactively: make reasonable assumptions, and report a blocker in the final result if the task cannot be completed.\n\n\
          TASK:\n{request}\n"
     )
+}
+
+fn task_workspace(store: &TaskStore, task_id: &str) -> Result<PathBuf> {
+    fs::canonicalize(store.workspace_dir(task_id)?)
+        .with_context(|| format!("resolve workspace for task '{task_id}'"))
+}
+
+fn task_working_directory(workspace: &Path) -> Result<PathBuf> {
+    let working_directory =
+        fs::canonicalize(env::current_dir()?).context("resolve current working directory")?;
+    if !working_directory.starts_with(workspace) {
+        bail!(
+            "current directory '{}' is outside task workspace '{}'",
+            working_directory.display(),
+            workspace.display()
+        );
+    }
+    Ok(working_directory)
 }
 
 fn print_json(value: &impl Serialize) -> Result<()> {
@@ -316,6 +383,7 @@ mod tests {
     fn worker_prompt_contains_only_the_explicit_request_and_preamble() {
         let prompt = build_worker_prompt("Investigate the Bobr scheduler.");
         assert!(prompt.contains("TASK:\nInvestigate the Bobr scheduler."));
+        assert!(prompt.contains("bobr-task run -- <command>"));
         assert!(!prompt.contains("coordinator conversation"));
         assert!(!prompt.contains("USER:"));
     }
