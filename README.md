@@ -10,8 +10,10 @@ The initial interface is:
 
 ```text
 bobr-task start <short-label> <request-file>
+bobr-task continue <task-id> <request-file>
 bobr-task status <task-id>
 bobr-task result <task-id>
+bobr-task history <task-id>
 bobr-task cancel <task-id>
 bobr-task run -- <command> [args...]
 ```
@@ -24,6 +26,11 @@ suffix. It reads the current coordinator session ID from
 `ZEROCLAW_SESSION_ID`, copies the explicit request into task metadata, and
 never reconstructs a request from conversation history. User text is read
 from the file rather than interpolated into a shell command.
+
+`continue` sends a follow-up request to the same worker session in the same
+workspace. Completed turns are kept as immutable `result.NNNN.json` files;
+`result` returns the current terminal result, while `history` returns all
+completed turns in order.
 
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and

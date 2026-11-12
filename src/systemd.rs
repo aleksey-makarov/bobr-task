@@ -99,6 +99,13 @@ impl Systemd {
         }
     }
 
+    pub async fn unit_is_active(&self, unit: &str) -> Result<bool> {
+        Ok(matches!(
+            self.unit_state(unit).await?.as_str(),
+            "active" | "activating" | "reloading" | "deactivating"
+        ))
+    }
+
     pub async fn run_command(
         &self,
         task_id: &str,
@@ -233,12 +240,13 @@ mod tests {
             systemctl: "systemctl".into(),
         };
         let task = TaskRecord {
-            schema_version: 1,
+            schema_version: 2,
             id: task_id.into(),
             coordinator_session_id: "coordinator".into(),
             worker_session_id: None,
             controller_unit: "bobr-task-261110184237-test-task-controller.service".into(),
             created_unix_ms: 0,
+            current_turn: 1,
             request: "test".into(),
         };
 

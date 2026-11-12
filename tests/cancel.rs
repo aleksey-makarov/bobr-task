@@ -34,12 +34,13 @@ async fn cancel_stops_the_command_before_aborting_the_worker() {
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",
             "controller_unit": "bobr-task-261111151608-cancel-check-controller.service",
             "created_unix_ms": 0,
+            "current_turn": 1,
             "request": "test cancellation"
         }))
         .unwrap(),
@@ -107,6 +108,6 @@ rpc:session/abort\n\
 systemd:bobr-task-261111151608-cancel-check-controller.service\n"
     );
     let result: Value =
-        serde_json::from_slice(&fs::read(task_dir.join("result.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(task_dir.join("result.0001.json")).unwrap()).unwrap();
     assert_eq!(result["outcome"], "cancelled");
 }

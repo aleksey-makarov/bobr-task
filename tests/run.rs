@@ -15,12 +15,13 @@ async fn run_returns_the_command_unit_exit_status() {
     fs::write(
         task_root.join(task_id).join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",
             "controller_unit": "bobr-task-261111151608-status-check-controller.service",
             "created_unix_ms": 0,
+            "current_turn": 1,
             "request": "test status"
         }))
         .unwrap(),

@@ -6,11 +6,12 @@ use serde_json::Value;
 use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TaskRecord {
@@ -20,6 +21,7 @@ pub struct TaskRecord {
     pub worker_session_id: Option<String>,
     pub controller_unit: String,
     pub created_unix_ms: u128,
+    pub current_turn: u32,
     pub request: String,
 }
 
@@ -27,33 +29,41 @@ pub struct TaskRecord {
 pub struct TaskResult {
     pub schema_version: u32,
     pub task_id: String,
+    pub turn: u32,
+    pub request: String,
     pub outcome: String,
     pub content: String,
 }
 
 impl TaskResult {
-    pub fn from_turn(task_id: &str, turn: TurnComplete) -> Self {
+    pub fn from_turn(task: &TaskRecord, turn: TurnComplete) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            task_id: task_id.to_owned(),
+            task_id: task.id.clone(),
+            turn: task.current_turn,
+            request: task.request.clone(),
             outcome: turn.outcome,
             content: turn.content,
         }
     }
 
-    pub fn failed(task_id: &str, content: String) -> Self {
+    pub fn failed(task: &TaskRecord, content: String) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            task_id: task_id.to_owned(),
+            task_id: task.id.clone(),
+            turn: task.current_turn,
+            request: task.request.clone(),
             outcome: "failed".to_owned(),
             content,
         }
     }
 
-    pub fn cancelled(task_id: &str) -> Self {
+    pub fn cancelled(task: &TaskRecord) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            task_id: task_id.to_owned(),
+            task_id: task.id.clone(),
+            turn: task.current_turn,
+            request: task.request.clone(),
             outcome: "cancelled".to_owned(),
             content: "Cancelled by operator".to_owned(),
         }
@@ -121,6 +131,7 @@ impl TaskStore {
                             .duration_since(UNIX_EPOCH)
                             .context("system clock precedes Unix epoch")?
                             .as_millis(),
+                        current_turn: 1,
                         request: request.to_owned(),
                     };
                     self.write_record(&record)?;
@@ -174,13 +185,33 @@ impl TaskStore {
         write_json_atomic(&path, record)
     }
 
-    pub fn read_result(&self, task_id: &str) -> Result<Option<TaskResult>> {
-        let path = self.task_dir(task_id)?.join("result.json");
+    pub fn read_result(&self, task: &TaskRecord) -> Result<Option<TaskResult>> {
+        self.read_turn_result(task, task.current_turn)
+    }
+
+    pub fn read_results(&self, task: &TaskRecord) -> Result<Vec<TaskResult>> {
+        let mut results = Vec::new();
+        for turn in 1..=task.current_turn {
+            match self.read_turn_result(task, turn)? {
+                Some(result) => results.push(result),
+                None if turn == task.current_turn => {}
+                None => bail!("task '{}' has no result for turn {turn}", task.id),
+            }
+        }
+        Ok(results)
+    }
+
+    fn read_turn_result(&self, task: &TaskRecord, turn: u32) -> Result<Option<TaskResult>> {
+        let path = self.result_path(&task.id, turn)?;
         match fs::read(&path) {
             Ok(data) => {
                 let result: TaskResult = serde_json::from_slice(&data)?;
-                if result.task_id != task_id || result.schema_version != SCHEMA_VERSION {
-                    bail!("task result does not match task '{task_id}'");
+                if result.task_id != task.id
+                    || result.turn != turn
+                    || (result.request != task.request && turn == task.current_turn)
+                    || result.schema_version != SCHEMA_VERSION
+                {
+                    bail!("task result does not match task '{}' turn {turn}", task.id);
                 }
                 Ok(Some(result))
             }
@@ -189,9 +220,54 @@ impl TaskStore {
         }
     }
 
-    pub fn write_result(&self, task_id: &str, result: &TaskResult) -> Result<()> {
-        let path = self.task_dir(task_id)?.join("result.json");
-        write_json_atomic(&path, result)
+    pub fn write_result(&self, result: &TaskResult) -> Result<()> {
+        let task = self.read_record(&result.task_id)?;
+        if result.turn != task.current_turn || result.request != task.request {
+            bail!(
+                "result does not match current turn {} of task '{}'",
+                task.current_turn,
+                task.id
+            );
+        }
+        let path = self.result_path(&task.id, result.turn)?;
+        write_json_once(&path, result)
+    }
+
+    pub fn lock_task(&self, task_id: &str) -> Result<TaskLock> {
+        let path = self.task_dir(task_id)?.join("task.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("open '{}'", path.display()))?;
+        // SAFETY: `file` owns a valid descriptor for the duration of the lock.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("lock task '{task_id}'"));
+        }
+        Ok(TaskLock { file })
+    }
+
+    fn result_path(&self, task_id: &str, turn: u32) -> Result<PathBuf> {
+        Ok(self
+            .task_dir(task_id)?
+            .join(format!("result.{turn:04}.json")))
+    }
+}
+
+pub struct TaskLock {
+    file: fs::File,
+}
+
+impl Drop for TaskLock {
+    fn drop(&mut self) {
+        // SAFETY: `self.file` remains open until after this method returns.
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
     }
 }
 
@@ -269,6 +345,38 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn write_json_once(path: &Path, value: &impl Serialize) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("JSON path has no UTF-8 file name")?;
+    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .with_context(|| format!("create '{}'", temporary.display()))?;
+    let write = (|| -> Result<()> {
+        let data = serde_json::to_vec_pretty(value)?;
+        file.write_all(&data)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(error) = write {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::hard_link(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("create immutable '{}'", path.display()));
+    }
+    fs::remove_file(&temporary).with_context(|| format!("remove '{}'", temporary.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,18 +424,50 @@ mod tests {
     }
 
     #[test]
-    fn result_is_written_atomically() {
+    fn results_are_numbered_and_immutable() {
         let dir = tempdir().unwrap();
         let store = TaskStore::new(dir.path()).unwrap();
         let record = store
             .create("cancel-task", "coordinator", "request")
             .unwrap();
-        store
-            .write_result(&record.id, &TaskResult::cancelled(&record.id))
-            .unwrap();
+        let result = TaskResult::cancelled(&record);
+        store.write_result(&result).unwrap();
         assert_eq!(
-            store.read_result(&record.id).unwrap().unwrap().outcome,
+            store.read_result(&record).unwrap().unwrap().outcome,
             "cancelled"
+        );
+        assert!(
+            store
+                .task_dir(&record.id)
+                .unwrap()
+                .join("result.0001.json")
+                .is_file()
+        );
+        assert!(store.write_result(&result).is_err());
+    }
+
+    #[test]
+    fn reads_completed_turns_in_order() {
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let mut record = store
+            .create("continued-task", "coordinator", "first")
+            .unwrap();
+        store
+            .write_result(&TaskResult::failed(&record, "first result".into()))
+            .unwrap();
+        record.current_turn = 2;
+        record.request = "second".into();
+        store.write_record(&record).unwrap();
+
+        assert_eq!(store.read_results(&record).unwrap().len(), 1);
+        store
+            .write_result(&TaskResult::failed(&record, "second result".into()))
+            .unwrap();
+        let results = store.read_results(&record).unwrap();
+        assert_eq!(
+            results.iter().map(|result| result.turn).collect::<Vec<_>>(),
+            [1, 2]
         );
     }
 

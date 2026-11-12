@@ -19,10 +19,18 @@ enum Command {
         /// UTF-8 task request below the coordinator workspace.
         request_file: PathBuf,
     },
+    /// Continue a completed task in its existing worker session.
+    Continue {
+        task_id: String,
+        /// UTF-8 follow-up request below the coordinator workspace.
+        request_file: PathBuf,
+    },
     /// Report task state.
     Status { task_id: String },
     /// Print a completed task result.
     Result { task_id: String },
+    /// Print all completed turn results in order.
+    History { task_id: String },
     /// Cancel a running task.
     Cancel { task_id: String },
     /// Run one long-lived command owned by the current task.
@@ -49,8 +57,13 @@ async fn main() -> Result<()> {
             label,
             request_file,
         } => bobr_task::start(&label, &request_file).await,
+        Command::Continue {
+            task_id,
+            request_file,
+        } => bobr_task::continue_task(&task_id, &request_file).await,
         Command::Status { task_id } => bobr_task::status(&task_id).await,
         Command::Result { task_id } => bobr_task::result(&task_id),
+        Command::History { task_id } => bobr_task::history(&task_id),
         Command::Cancel { task_id } => bobr_task::cancel(&task_id).await,
         Command::Run { command } => {
             let status = bobr_task::run(&command).await?;

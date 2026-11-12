@@ -29,6 +29,7 @@ pub const BOBR_TASK_ID: &str = "BOBR_TASK_ID";
 struct StartOutput<'a> {
     task_id: &'a str,
     state: &'static str,
+    turn: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +38,7 @@ struct StatusOutput<'a> {
     state: String,
     controller_unit: &'a str,
     worker_session_id: Option<&'a str>,
+    turn: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     worker_state: Option<String>,
 }
@@ -45,6 +47,14 @@ struct StatusOutput<'a> {
 struct CancelOutput<'a> {
     task_id: &'a str,
     state: &'static str,
+    turn: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryOutput<'a> {
+    task_id: &'a str,
+    current_turn: u32,
+    results: Vec<TaskResult>,
 }
 
 /// Start a task from the current ZeroClaw coordinator session.
@@ -68,15 +78,85 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
         )
         .await
     {
-        let result =
-            TaskResult::failed(&record.id, format!("failed to start controller: {error:#}"));
-        store.write_result(&record.id, &result)?;
+        let result = TaskResult::failed(&record, format!("failed to start controller: {error:#}"));
+        store.write_result(&result)?;
         return Err(error);
     }
 
     print_json(&StartOutput {
         task_id: &record.id,
         state: "started",
+        turn: record.current_turn,
+    })
+}
+
+/// Continue a completed task in its existing worker session and workspace.
+pub async fn continue_task(task_id: &str, request_file: &Path) -> Result<()> {
+    let config = Config::from_env()?;
+    let coordinator_session_id = env::var(ZEROCLAW_SESSION_ID)
+        .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
+    let coordinator_workspace = env::current_dir().context("resolve coordinator workspace")?;
+    let request = read_request_file(&coordinator_workspace, request_file)?;
+    let worker_base_path = worker_base_path()?;
+    let store = TaskStore::new(&config.task_root)?;
+    let _lock = store.lock_task(task_id)?;
+    let mut record = store.read_record(task_id)?;
+
+    if record.coordinator_session_id != coordinator_session_id {
+        bail!("task '{task_id}' belongs to another coordinator session");
+    }
+    let previous = store.read_result(&record)?.ok_or_else(|| {
+        anyhow!(
+            "task '{task_id}' turn {} is still active",
+            record.current_turn
+        )
+    })?;
+    if previous.outcome == "cancelled" {
+        bail!("cancelled task '{task_id}' cannot be continued");
+    }
+    let worker_session_id = record
+        .worker_session_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("task '{task_id}' has no worker session"))?;
+    let systemd = Systemd::new(&config);
+    if systemd.unit_is_active(&record.controller_unit).await?
+        || systemd.unit_is_active(&command_unit(task_id)).await?
+    {
+        bail!("task '{task_id}' still has an active unit");
+    }
+    let mut rpc = RpcClient::connect(&config.rpc_socket, HashMap::new()).await?;
+    let worker_state = rpc
+        .session_state(worker_session_id)
+        .await
+        .with_context(|| format!("worker session '{worker_session_id}' is unavailable"))?;
+    if worker_state != "idle" {
+        bail!("worker session '{worker_session_id}' is {worker_state}, not idle");
+    }
+
+    record.current_turn = record
+        .current_turn
+        .checked_add(1)
+        .context("task turn counter overflow")?;
+    record.request = request;
+    store.write_record(&record)?;
+
+    if let Err(error) = systemd
+        .start_controller(
+            &record,
+            &env::current_exe().context("locate bobr-task executable")?,
+            &worker_base_path,
+        )
+        .await
+    {
+        let result = TaskResult::failed(&record, format!("failed to start controller: {error:#}"));
+        store.write_result(&result)?;
+        return Err(error);
+    }
+
+    print_json(&StartOutput {
+        task_id: &record.id,
+        state: "started",
+        turn: record.current_turn,
     })
 }
 
@@ -86,12 +166,13 @@ pub async fn status(task_id: &str) -> Result<()> {
     let store = TaskStore::new(&config.task_root)?;
     let record = store.read_record(task_id)?;
 
-    if let Some(result) = store.read_result(task_id)? {
+    if let Some(result) = store.read_result(&record)? {
         return print_json(&StatusOutput {
             task_id,
             state: result.outcome,
             controller_unit: &record.controller_unit,
             worker_session_id: record.worker_session_id.as_deref(),
+            turn: record.current_turn,
             worker_state: None,
         });
     }
@@ -112,6 +193,7 @@ pub async fn status(task_id: &str) -> Result<()> {
         state: unit_state,
         controller_unit: &record.controller_unit,
         worker_session_id: record.worker_session_id.as_deref(),
+        turn: record.current_turn,
         worker_state,
     })
 }
@@ -120,22 +202,40 @@ pub async fn status(task_id: &str) -> Result<()> {
 pub fn result(task_id: &str) -> Result<()> {
     let config = Config::from_env()?;
     let store = TaskStore::new(&config.task_root)?;
-    let result = store
-        .read_result(task_id)?
-        .ok_or_else(|| anyhow!("task '{task_id}' has not produced a result"))?;
+    let record = store.read_record(task_id)?;
+    let result = store.read_result(&record)?.ok_or_else(|| {
+        anyhow!(
+            "task '{task_id}' turn {} is still active",
+            record.current_turn
+        )
+    })?;
     print_json(&result)
+}
+
+/// Print all completed turn results in order.
+pub fn history(task_id: &str) -> Result<()> {
+    let config = Config::from_env()?;
+    let store = TaskStore::new(&config.task_root)?;
+    let record = store.read_record(task_id)?;
+    print_json(&HistoryOutput {
+        task_id,
+        current_turn: record.current_turn,
+        results: store.read_results(&record)?,
+    })
 }
 
 /// Cancel the active command, worker turn, and controller, in that order.
 pub async fn cancel(task_id: &str) -> Result<()> {
     let config = Config::from_env()?;
     let store = TaskStore::new(&config.task_root)?;
+    let _lock = store.lock_task(task_id)?;
     let record = store.read_record(task_id)?;
 
-    if store.read_result(task_id)?.is_some() {
+    if store.read_result(&record)?.is_some() {
         return print_json(&CancelOutput {
             task_id,
             state: "finished",
+            turn: record.current_turn,
         });
     }
 
@@ -148,11 +248,19 @@ pub async fn cancel(task_id: &str) -> Result<()> {
     }
 
     systemd.stop_unit(&record.controller_unit).await?;
-    store.write_result(task_id, &TaskResult::cancelled(task_id))?;
+    if store.read_result(&record)?.is_some() {
+        return print_json(&CancelOutput {
+            task_id,
+            state: "finished",
+            turn: record.current_turn,
+        });
+    }
+    store.write_result(&TaskResult::cancelled(&record))?;
 
     print_json(&CancelOutput {
         task_id,
         state: "cancelled",
+        turn: record.current_turn,
     })
 }
 
@@ -200,18 +308,29 @@ pub fn exec(task_id: &str, command: &[OsString]) -> Result<()> {
 pub async fn controller(task_id: &str) -> Result<()> {
     let config = Config::from_env()?;
     let store = TaskStore::new(&config.task_root)?;
-    match controller_inner(&config, &store, task_id).await {
+    let turn = controller_inner(&config, &store, task_id).await;
+    // Cancellation holds this lock while stopping the controller. This keeps
+    // an aborted prompt from publishing a failed result before cancellation
+    // can publish the terminal cancelled result.
+    let _lock = store.lock_task(task_id)?;
+    match turn {
         Ok(turn) => {
-            let result = TaskResult::from_turn(task_id, turn);
+            let record = store.read_record(task_id)?;
+            let result = TaskResult::from_turn(&record, turn);
             let failed = result.outcome == "failed";
-            store.write_result(task_id, &result)?;
+            if store.read_result(&record)?.is_none() {
+                store.write_result(&result)?;
+            }
             if failed {
                 bail!("worker turn failed: {}", result.content);
             }
             Ok(())
         }
         Err(error) => {
-            store.write_result(task_id, &TaskResult::failed(task_id, format!("{error:#}")))?;
+            let record = store.read_record(task_id)?;
+            if store.read_result(&record)?.is_none() {
+                store.write_result(&TaskResult::failed(&record, format!("{error:#}")))?;
+            }
             Err(error)
         }
     }
@@ -239,14 +358,23 @@ async fn controller_inner(
     );
 
     let mut rpc = RpcClient::connect(&config.rpc_socket, rpc_env).await?;
-    let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
-    rpc.session_new(&config.worker_alias, &worker_session_id, &workspace)
-        .await?;
-    record.worker_session_id = Some(worker_session_id.clone());
-    store.write_record(&record)?;
+    let (worker_session_id, prompt) = match record.worker_session_id.clone() {
+        Some(worker_session_id) => {
+            let prompt = build_followup_prompt(&record.request);
+            (worker_session_id, prompt)
+        }
+        None => {
+            let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
+            rpc.session_new(&config.worker_alias, &worker_session_id, &workspace)
+                .await?;
+            record.worker_session_id = Some(worker_session_id.clone());
+            store.write_record(&record)?;
+            let prompt = build_worker_prompt(&record.request);
+            (worker_session_id, prompt)
+        }
+    };
 
     let log_path = task_dir.join("controller.log");
-    let prompt = build_worker_prompt(&record.request);
     rpc.session_prompt(&worker_session_id, &prompt, |frame| {
         task::append_json_line(&log_path, frame)
     })
@@ -314,6 +442,10 @@ fn build_worker_prompt(request: &str) -> String {
          Work non-interactively: make reasonable assumptions, and report a blocker in the final result if the task cannot be completed.\n\n\
          TASK:\n{request}\n"
     )
+}
+
+fn build_followup_prompt(request: &str) -> String {
+    format!("FOLLOW-UP:\n{request}\n")
 }
 
 fn task_workspace(store: &TaskStore, task_id: &str) -> Result<PathBuf> {
