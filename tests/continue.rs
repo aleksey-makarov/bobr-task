@@ -14,12 +14,13 @@ fn write_task(task_root: &Path, task_id: &str, turn: u32, request: &str) {
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",
             "controller_unit": "bobr-task-261112120000-continued-controller.service",
             "created_unix_ms": 0,
+            "last_used_unix_ms": 0,
             "current_turn": turn,
             "request": request
         }))
@@ -34,7 +35,7 @@ fn write_result(task_root: &Path, task_id: &str, turn: u32, request: &str) {
             .join(task_id)
             .join(format!("result.{turn:04}.json")),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "task_id": task_id,
             "turn": turn,
             "request": request,
@@ -134,6 +135,12 @@ async fn continue_advances_the_turn_and_starts_the_existing_task() {
             .unwrap();
     assert_eq!(task["current_turn"], 2);
     assert_eq!(task["request"], "second request");
+    assert!(task["last_used_unix_ms"].as_u64().unwrap() > 0);
+    let coordinator_state: Value = serde_json::from_slice(
+        &fs::read(task_root.join(".coordinators/coordinator/state.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(coordinator_state["current_task_id"], task_id);
     assert!(task_root.join(task_id).join("result.0001.json").is_file());
     assert!(!task_root.join(task_id).join("result.0002.json").exists());
     assert!(
@@ -145,6 +152,7 @@ async fn continue_advances_the_turn_and_starts_the_existing_task() {
     let current_result = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
         .arg("result")
         .arg(task_id)
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
         .output()
         .await
@@ -155,6 +163,7 @@ async fn continue_advances_the_turn_and_starts_the_existing_task() {
     let history = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
         .arg("history")
         .arg(task_id)
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
         .output()
         .await
@@ -226,6 +235,7 @@ async fn followup_controller_reuses_the_worker_session() {
     let history = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
         .arg("history")
         .arg(task_id)
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
         .output()
         .await
@@ -235,6 +245,75 @@ async fn followup_controller_reuses_the_worker_session() {
     assert_eq!(history["results"].as_array().unwrap().len(), 2);
     assert_eq!(history["results"][0]["content"], "result 1");
     assert_eq!(history["results"][1]["content"], "tests inspected");
+}
+
+#[tokio::test]
+async fn cancelled_controller_turn_clears_the_current_task() {
+    let dir = tempdir().unwrap();
+    let task_root = dir.path().join("tasks");
+    let task_id = "261112120000.cancelled";
+    write_task(&task_root, task_id, 1, "cancel this turn");
+    let coordinator_dir = task_root.join(".coordinators/coordinator");
+    fs::create_dir_all(&coordinator_dir).unwrap();
+    fs::write(
+        coordinator_dir.join("state.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "zeroclaw_session_id": "coordinator",
+            "current_task_id": task_id
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let socket = dir.path().join("rpc.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = BufReader::new(stream);
+        let initialize = receive(&mut stream).await;
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":initialize["id"],"result":{}}),
+        )
+        .await;
+        let prompt = receive(&mut stream).await;
+        assert_eq!(prompt["method"], "session/prompt");
+        send(
+            &mut stream,
+            json!({"jsonrpc":"2.0","method":"session/update","params":{
+                "type":"turn_complete",
+                "session_id":"worker",
+                "outcome":"cancelled",
+                "content":"cancelled by runtime"
+            }}),
+        )
+        .await;
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
+        .arg("controller")
+        .arg(task_id)
+        .env("ZEROCLAW_RPC_SOCKET", &socket)
+        .env("BOBR_TASK_ROOT", &task_root)
+        .env(
+            "BOBR_TASK_BASE_PATH",
+            "/run/wrappers/bin:/nix/store/agent/bin",
+        )
+        .output()
+        .await
+        .unwrap();
+    server.await.unwrap();
+    assert!(output.status.success(), "{output:?}");
+
+    let result: Value = serde_json::from_slice(
+        &fs::read(task_root.join(task_id).join("result.0001.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["outcome"], "cancelled");
+    let state: Value =
+        serde_json::from_slice(&fs::read(coordinator_dir.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state["current_task_id"], Value::Null);
 }
 
 #[tokio::test]

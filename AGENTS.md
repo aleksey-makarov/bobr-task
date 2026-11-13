@@ -7,6 +7,9 @@ Keep these invariants explicit:
 
 - one task owns exactly one directory below the configured task root;
 - task IDs are validated before they are used in paths or unit names;
+- each coordinator dialog owns an explicit current-task selection below
+  `.coordinators/<session-id>/`; task commands enforce ownership, and
+  cancellation clears only the matching selection without fallback;
 - the coordinator invokes `bobr-task start <short-label> <request-file>`; the
   label is its own one- or two-word summary, the request is a regular UTF-8 file
   below the coordinator workspace, and arbitrary user text never becomes shell

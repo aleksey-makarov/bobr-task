@@ -10,11 +10,14 @@ The initial interface is:
 
 ```text
 bobr-task start <short-label> <request-file>
-bobr-task continue <task-id> <request-file>
-bobr-task status <task-id>
-bobr-task result <task-id>
-bobr-task history <task-id>
-bobr-task cancel <task-id>
+bobr-task list
+bobr-task current
+bobr-task select <task-id>
+bobr-task continue <task-id|current> <request-file>
+bobr-task status <task-id|current>
+bobr-task result <task-id|current>
+bobr-task history <task-id|current>
+bobr-task cancel <task-id|current>
 bobr-task run -- <command> [args...]
 ```
 
@@ -30,7 +33,15 @@ from the file rather than interpolated into a shell command.
 `continue` sends a follow-up request to the same worker session in the same
 workspace. Completed turns are kept as immutable `result.NNNN.json` files;
 `result` returns the current terminal result, while `history` returns all
-completed turns in order.
+completed turns in order. Task operations are limited to tasks owned by the
+current coordinator dialog.
+
+`start`, an accepted `continue`, and `select` make a task current for that
+dialog. `list` shows its tasks by most recent explicit use, and `current`
+reports the selection. Commands that take a task accept the literal `current`
+instead of an ID. Cancelling the selected task clears the selection without
+falling back to an older task; cancelled tasks remain available by exact ID but
+cannot be selected again.
 
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and

@@ -100,6 +100,19 @@ pub fn validate_task_label(label: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_session_id(session_id: &str) -> Result<()> {
+    if session_id.is_empty()
+        || session_id.len() > 128
+        || matches!(session_id, "." | "..")
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        bail!("invalid ZeroClaw session ID");
+    }
+    Ok(())
+}
+
 pub fn current_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and does not dereference pointers.
     unsafe { libc::geteuid() }
@@ -154,6 +167,20 @@ mod tests {
             "this-label-is-much-too-long",
         ] {
             assert!(validate_task_label(value).is_err(), "accepted {value:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_safe_session_ids() {
+        for value in [
+            "telegram_bobr_77354972_aleksey_makarov",
+            "cron.package-updates",
+            "coordinator-1",
+        ] {
+            validate_session_id(value).unwrap();
+        }
+        for value in ["", ".", "..", "telegram/bobr", "session:one", "привет"] {
+            assert!(validate_session_id(value).is_err(), "accepted {value:?}");
         }
     }
 

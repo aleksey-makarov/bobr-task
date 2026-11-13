@@ -6,7 +6,7 @@ mod systemd;
 mod task;
 
 use anyhow::{Context, Result, anyhow, bail};
-use config::{Config, worker_base_path};
+use config::{Config, validate_session_id, worker_base_path};
 use rpc::{RpcClient, TurnComplete};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use systemd::Systemd;
-use task::{TaskResult, TaskStore, command_unit, runtime_name};
+use task::{TaskRecord, TaskResult, TaskStore, command_unit, runtime_name, task_label};
 
 /// Environment variable installed by ZeroClaw's shell tool for the active
 /// coordinator session.
@@ -48,6 +48,7 @@ struct CancelOutput<'a> {
     task_id: &'a str,
     state: &'static str,
     turn: u32,
+    current_cleared: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,17 +58,46 @@ struct HistoryOutput<'a> {
     results: Vec<TaskResult>,
 }
 
+#[derive(Debug, Serialize)]
+struct TaskSummary {
+    task_id: String,
+    label: String,
+    state: String,
+    turn: u32,
+    last_used_unix_ms: u128,
+    current: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ListOutput {
+    current_task_id: Option<String>,
+    skipped_incompatible: usize,
+    tasks: Vec<TaskSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct CurrentOutput {
+    task: Option<TaskSummary>,
+}
+
 /// Start a task from the current ZeroClaw coordinator session.
 pub async fn start(label: &str, request_file: &Path) -> Result<()> {
     let config = Config::from_env()?;
-    let coordinator_session_id = env::var(ZEROCLAW_SESSION_ID)
-        .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
+    let coordinator_session_id = coordinator_session_id()?;
     let coordinator_workspace = env::current_dir().context("resolve coordinator workspace")?;
     let request = read_request_file(&coordinator_workspace, request_file)?;
     let worker_base_path = worker_base_path()?;
 
     let store = TaskStore::new(&config.task_root)?;
+    let _coordinator_lock = store.lock_coordinator(&coordinator_session_id)?;
     let record = store.create(label, &coordinator_session_id, &request)?;
+    if let Err(error) = store.set_current(&coordinator_session_id, Some(&record.id)) {
+        store.write_result(&TaskResult::failed(
+            &record,
+            format!("failed to select new task: {error:#}"),
+        ))?;
+        return Err(error);
+    }
     let systemd = Systemd::new(&config);
 
     if let Err(error) = systemd
@@ -79,7 +109,10 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
         .await
     {
         let result = TaskResult::failed(&record, format!("failed to start controller: {error:#}"));
-        store.write_result(&result)?;
+        let result_write = store.write_result(&result);
+        let current_clear = store.clear_current_if(&coordinator_session_id, &record.id);
+        result_write?;
+        current_clear?;
         return Err(error);
     }
 
@@ -91,20 +124,18 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
 }
 
 /// Continue a completed task in its existing worker session and workspace.
-pub async fn continue_task(task_id: &str, request_file: &Path) -> Result<()> {
+pub async fn continue_task(task_ref: &str, request_file: &Path) -> Result<()> {
     let config = Config::from_env()?;
-    let coordinator_session_id = env::var(ZEROCLAW_SESSION_ID)
-        .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
+    let coordinator_session_id = coordinator_session_id()?;
     let coordinator_workspace = env::current_dir().context("resolve coordinator workspace")?;
     let request = read_request_file(&coordinator_workspace, request_file)?;
     let worker_base_path = worker_base_path()?;
     let store = TaskStore::new(&config.task_root)?;
-    let _lock = store.lock_task(task_id)?;
-    let mut record = store.read_record(task_id)?;
-
-    if record.coordinator_session_id != coordinator_session_id {
-        bail!("task '{task_id}' belongs to another coordinator session");
-    }
+    let _coordinator_lock = store.lock_coordinator(&coordinator_session_id)?;
+    let mut record = resolve_owned_task(&store, &coordinator_session_id, task_ref)?;
+    let task_id = record.id.clone();
+    let _task_lock = store.lock_task(&task_id)?;
+    record = store.read_record(&task_id)?;
     let previous = store.read_result(&record)?.ok_or_else(|| {
         anyhow!(
             "task '{task_id}' turn {} is still active",
@@ -120,7 +151,7 @@ pub async fn continue_task(task_id: &str, request_file: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("task '{task_id}' has no worker session"))?;
     let systemd = Systemd::new(&config);
     if systemd.unit_is_active(&record.controller_unit).await?
-        || systemd.unit_is_active(&command_unit(task_id)).await?
+        || systemd.unit_is_active(&command_unit(&task_id)).await?
     {
         bail!("task '{task_id}' still has an active unit");
     }
@@ -138,7 +169,8 @@ pub async fn continue_task(task_id: &str, request_file: &Path) -> Result<()> {
         .checked_add(1)
         .context("task turn counter overflow")?;
     record.request = request;
-    store.write_record(&record)?;
+    store.set_current(&coordinator_session_id, Some(&task_id))?;
+    store.touch_record(&mut record)?;
 
     if let Err(error) = systemd
         .start_controller(
@@ -160,11 +192,73 @@ pub async fn continue_task(task_id: &str, request_file: &Path) -> Result<()> {
     })
 }
 
-/// Report task state using its result, user unit, and worker session.
-pub async fn status(task_id: &str) -> Result<()> {
+/// List tasks owned by the current coordinator dialog.
+pub async fn list() -> Result<()> {
     let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
     let store = TaskStore::new(&config.task_root)?;
-    let record = store.read_record(task_id)?;
+    let current_task_id = store.read_current(&coordinator_session_id)?;
+    let listed = store.list_records(&coordinator_session_id)?;
+    let systemd = Systemd::new(&config);
+    let mut tasks = Vec::with_capacity(listed.records.len());
+    for record in listed.records {
+        tasks.push(summarize_task(&store, &systemd, record, current_task_id.as_deref()).await?);
+    }
+    print_json(&ListOutput {
+        current_task_id,
+        skipped_incompatible: listed.skipped_incompatible,
+        tasks,
+    })
+}
+
+/// Report the task selected for the current coordinator dialog.
+pub async fn current() -> Result<()> {
+    let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
+    let store = TaskStore::new(&config.task_root)?;
+    let Some(task_id) = store.read_current(&coordinator_session_id)? else {
+        return print_json(&CurrentOutput { task: None });
+    };
+    let record = resolve_owned_task(&store, &coordinator_session_id, &task_id)?;
+    let summary = summarize_task(&store, &Systemd::new(&config), record, Some(&task_id)).await?;
+    print_json(&CurrentOutput {
+        task: Some(summary),
+    })
+}
+
+/// Select an existing non-cancelled task for the current coordinator dialog.
+pub async fn select(task_id: &str) -> Result<()> {
+    if task_id == "current" {
+        bail!("select requires an exact task ID");
+    }
+    let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
+    let store = TaskStore::new(&config.task_root)?;
+    let _coordinator_lock = store.lock_coordinator(&coordinator_session_id)?;
+    let mut record = resolve_owned_task(&store, &coordinator_session_id, task_id)?;
+    let _task_lock = store.lock_task(&record.id)?;
+    record = store.read_record(&record.id)?;
+    if store
+        .read_result(&record)?
+        .is_some_and(|result| result.outcome == "cancelled")
+    {
+        bail!("cancelled task '{}' cannot be selected", record.id);
+    }
+    store.touch_record(&mut record)?;
+    store.set_current(&coordinator_session_id, Some(&record.id))?;
+    drop(_task_lock);
+    drop(_coordinator_lock);
+    let summary = summarize_task(&store, &Systemd::new(&config), record, Some(task_id)).await?;
+    print_json(&summary)
+}
+
+/// Report task state using its result, user unit, and worker session.
+pub async fn status(task_ref: &str) -> Result<()> {
+    let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
+    let store = TaskStore::new(&config.task_root)?;
+    let record = resolve_owned_task(&store, &coordinator_session_id, task_ref)?;
+    let task_id = &record.id;
 
     if let Some(result) = store.read_result(&record)? {
         return print_json(&StatusOutput {
@@ -199,10 +293,12 @@ pub async fn status(task_id: &str) -> Result<()> {
 }
 
 /// Print the terminal worker result.
-pub fn result(task_id: &str) -> Result<()> {
+pub fn result(task_ref: &str) -> Result<()> {
     let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
     let store = TaskStore::new(&config.task_root)?;
-    let record = store.read_record(task_id)?;
+    let record = resolve_owned_task(&store, &coordinator_session_id, task_ref)?;
+    let task_id = &record.id;
     let result = store.read_result(&record)?.ok_or_else(|| {
         anyhow!(
             "task '{task_id}' turn {} is still active",
@@ -213,34 +309,41 @@ pub fn result(task_id: &str) -> Result<()> {
 }
 
 /// Print all completed turn results in order.
-pub fn history(task_id: &str) -> Result<()> {
+pub fn history(task_ref: &str) -> Result<()> {
     let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
     let store = TaskStore::new(&config.task_root)?;
-    let record = store.read_record(task_id)?;
+    let record = resolve_owned_task(&store, &coordinator_session_id, task_ref)?;
     print_json(&HistoryOutput {
-        task_id,
+        task_id: &record.id,
         current_turn: record.current_turn,
         results: store.read_results(&record)?,
     })
 }
 
 /// Cancel the active command, worker turn, and controller, in that order.
-pub async fn cancel(task_id: &str) -> Result<()> {
+pub async fn cancel(task_ref: &str) -> Result<()> {
     let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
     let store = TaskStore::new(&config.task_root)?;
-    let _lock = store.lock_task(task_id)?;
-    let record = store.read_record(task_id)?;
+    let initial_record = resolve_owned_task(&store, &coordinator_session_id, task_ref)?;
+    let task_id = initial_record.id;
+    let _task_lock = store.lock_task(&task_id)?;
+    let record = store.read_record(&task_id)?;
 
-    if store.read_result(&record)?.is_some() {
+    if let Some(result) = store.read_result(&record)? {
+        drop(_task_lock);
+        let current_cleared = clear_cancelled_current(&store, &record, &result)?;
         return print_json(&CancelOutput {
-            task_id,
+            task_id: &task_id,
             state: "finished",
             turn: record.current_turn,
+            current_cleared,
         });
     }
 
     let systemd = Systemd::new(&config);
-    systemd.stop_unit(&command_unit(task_id)).await?;
+    systemd.stop_unit(&command_unit(&task_id)).await?;
 
     if let Some(session_id) = record.worker_session_id.as_deref() {
         let mut rpc = RpcClient::connect(&config.rpc_socket, HashMap::new()).await?;
@@ -248,19 +351,26 @@ pub async fn cancel(task_id: &str) -> Result<()> {
     }
 
     systemd.stop_unit(&record.controller_unit).await?;
-    if store.read_result(&record)?.is_some() {
+    if let Some(result) = store.read_result(&record)? {
+        drop(_task_lock);
+        let current_cleared = clear_cancelled_current(&store, &record, &result)?;
         return print_json(&CancelOutput {
-            task_id,
+            task_id: &task_id,
             state: "finished",
             turn: record.current_turn,
+            current_cleared,
         });
     }
-    store.write_result(&TaskResult::cancelled(&record))?;
+    let result = TaskResult::cancelled(&record);
+    store.write_result(&result)?;
+    drop(_task_lock);
+    let current_cleared = clear_cancelled_current(&store, &record, &result)?;
 
     print_json(&CancelOutput {
-        task_id,
+        task_id: &task_id,
         state: "cancelled",
         turn: record.current_turn,
+        current_cleared,
     })
 }
 
@@ -309,31 +419,57 @@ pub async fn controller(task_id: &str) -> Result<()> {
     let config = Config::from_env()?;
     let store = TaskStore::new(&config.task_root)?;
     let turn = controller_inner(&config, &store, task_id).await;
-    // Cancellation holds this lock while stopping the controller. This keeps
-    // an aborted prompt from publishing a failed result before cancellation
-    // can publish the terminal cancelled result.
-    let _lock = store.lock_task(task_id)?;
     match turn {
         Ok(turn) => {
             let record = store.read_record(task_id)?;
             let result = TaskResult::from_turn(&record, turn);
-            let failed = result.outcome == "failed";
-            if store.read_result(&record)?.is_none() {
-                store.write_result(&result)?;
-            }
-            if failed {
+            let result = finish_controller_result(&store, task_id, result)?;
+            clear_cancelled_current(&store, &record, &result)?;
+            if result.outcome == "failed" {
                 bail!("worker turn failed: {}", result.content);
             }
             Ok(())
         }
         Err(error) => {
             let record = store.read_record(task_id)?;
-            if store.read_result(&record)?.is_none() {
-                store.write_result(&TaskResult::failed(&record, format!("{error:#}")))?;
-            }
+            let result = finish_controller_result(
+                &store,
+                task_id,
+                TaskResult::failed(&record, format!("{error:#}")),
+            )?;
+            clear_cancelled_current(&store, &record, &result)?;
             Err(error)
         }
     }
+}
+
+fn finish_controller_result(
+    store: &TaskStore,
+    task_id: &str,
+    result: TaskResult,
+) -> Result<TaskResult> {
+    // Cancellation holds this lock while stopping the controller. This keeps
+    // an aborted prompt from publishing a failed result before cancellation
+    // can publish the terminal cancelled result.
+    let _task_lock = store.lock_task(task_id)?;
+    let record = store.read_record(task_id)?;
+    if let Some(existing) = store.read_result(&record)? {
+        return Ok(existing);
+    }
+    store.write_result(&result)?;
+    Ok(result)
+}
+
+fn clear_cancelled_current(
+    store: &TaskStore,
+    record: &TaskRecord,
+    result: &TaskResult,
+) -> Result<bool> {
+    if result.outcome != "cancelled" {
+        return Ok(false);
+    }
+    let _coordinator_lock = store.lock_coordinator(&record.coordinator_session_id)?;
+    store.clear_current_if(&record.coordinator_session_id, &record.id)
 }
 
 async fn controller_inner(
@@ -367,6 +503,8 @@ async fn controller_inner(
             let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
             rpc.session_new(&config.worker_alias, &worker_session_id, &workspace)
                 .await?;
+            let _task_lock = store.lock_task(task_id)?;
+            record = store.read_record(task_id)?;
             record.worker_session_id = Some(worker_session_id.clone());
             store.write_record(&record)?;
             let prompt = build_worker_prompt(&record.request);
@@ -387,6 +525,52 @@ fn task_path(home: &Path, base_path: &str) -> String {
         home.display(),
         home.display()
     )
+}
+
+fn coordinator_session_id() -> Result<String> {
+    let session_id = env::var(ZEROCLAW_SESSION_ID)
+        .context("ZEROCLAW_SESSION_ID is not set; run bobr-task from a ZeroClaw session")?;
+    validate_session_id(&session_id)?;
+    Ok(session_id)
+}
+
+fn resolve_owned_task(
+    store: &TaskStore,
+    coordinator_session_id: &str,
+    task_ref: &str,
+) -> Result<TaskRecord> {
+    let task_id = if task_ref == "current" {
+        store
+            .read_current(coordinator_session_id)?
+            .ok_or_else(|| anyhow!("no current task is selected"))?
+    } else {
+        task_ref.to_owned()
+    };
+    let record = store.read_record(&task_id)?;
+    if record.coordinator_session_id != coordinator_session_id {
+        bail!("task '{task_id}' belongs to another coordinator session");
+    }
+    Ok(record)
+}
+
+async fn summarize_task(
+    store: &TaskStore,
+    systemd: &Systemd,
+    record: TaskRecord,
+    current_task_id: Option<&str>,
+) -> Result<TaskSummary> {
+    let state = match store.read_result(&record)? {
+        Some(result) => result.outcome,
+        None => systemd.unit_state(&record.controller_unit).await?,
+    };
+    Ok(TaskSummary {
+        label: task_label(&record.id)?.to_owned(),
+        current: current_task_id == Some(record.id.as_str()),
+        task_id: record.id,
+        state,
+        turn: record.current_turn,
+        last_used_unix_ms: record.last_used_unix_ms,
+    })
 }
 
 fn read_request_file(coordinator_workspace: &Path, request_file: &Path) -> Result<String> {

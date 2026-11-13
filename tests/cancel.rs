@@ -34,14 +34,27 @@ async fn cancel_stops_the_command_before_aborting_the_worker() {
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",
             "controller_unit": "bobr-task-261111151608-cancel-check-controller.service",
             "created_unix_ms": 0,
+            "last_used_unix_ms": 0,
             "current_turn": 1,
             "request": "test cancellation"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let coordinator_dir = task_root.join(".coordinators/coordinator");
+    fs::create_dir_all(&coordinator_dir).unwrap();
+    fs::write(
+        coordinator_dir.join("state.json"),
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "zeroclaw_session_id": "coordinator",
+            "current_task_id": task_id
         }))
         .unwrap(),
     )
@@ -91,6 +104,7 @@ async fn cancel_stops_the_command_before_aborting_the_worker() {
     let output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
         .arg("cancel")
         .arg(task_id)
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
         .env("ZEROCLAW_RPC_SOCKET", &socket)
         .env("BOBR_TASK_SYSTEMCTL", &fake_systemctl)
@@ -110,4 +124,9 @@ systemd:bobr-task-261111151608-cancel-check-controller.service\n"
     let result: Value =
         serde_json::from_slice(&fs::read(task_dir.join("result.0001.json")).unwrap()).unwrap();
     assert_eq!(result["outcome"], "cancelled");
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["current_cleared"], true);
+    let state: Value =
+        serde_json::from_slice(&fs::read(coordinator_dir.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state["current_task_id"], Value::Null);
 }

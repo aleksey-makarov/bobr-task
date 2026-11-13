@@ -240,12 +240,13 @@ mod tests {
             systemctl: "systemctl".into(),
         };
         let task = TaskRecord {
-            schema_version: 2,
+            schema_version: 3,
             id: task_id.into(),
             coordinator_session_id: "coordinator".into(),
             worker_session_id: None,
             controller_unit: "bobr-task-261110184237-test-task-controller.service".into(),
             created_unix_ms: 0,
+            last_used_unix_ms: 0,
             current_turn: 1,
             request: "test".into(),
         };
