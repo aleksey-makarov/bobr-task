@@ -16,9 +16,9 @@ Keep these invariants explicit:
   syntax;
 - ZeroClaw remains the authority for agent sessions and systemd remains the
   authority for processes;
-- worker `HOME`, `TMPDIR`, and `PATH` are constructed explicitly; the base
-  `PATH` comes from `BOBR_TASK_BASE_PATH`, never from the daemon's ambient
-  environment;
+- worker `HOME`, `TMPDIR`, `PATH`, and `GH_CONFIG_DIR` are constructed
+  explicitly; the base `PATH` comes from `BOBR_TASK_BASE_PATH`, never from the
+  daemon's ambient environment;
 - one task has at most one transient command unit; long-lived commands run
   through `bobr-task run`, and cancellation stops that unit before aborting the
   ZeroClaw session;

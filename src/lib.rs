@@ -487,6 +487,10 @@ async fn controller_inner(
     rpc_env.insert("HOME".to_owned(), home.display().to_string());
     rpc_env.insert("TMPDIR".to_owned(), tmp.display().to_string());
     rpc_env.insert("PATH".to_owned(), path);
+    rpc_env.insert(
+        "GH_CONFIG_DIR".to_owned(),
+        config.github_config_dir.display().to_string(),
+    );
     rpc_env.insert(BOBR_TASK_ID.to_owned(), task_id.to_owned());
     rpc_env.insert(
         "BOBR_TASK_ROOT".to_owned(),

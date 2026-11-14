@@ -49,6 +49,9 @@ directories. A worker receives only its task-local `~/.local/bin` and
 ambient `PATH`. Its `HOME` and `TMPDIR` also point inside the task workspace.
 The base path must provide `systemd-run` and `systemctl`.
 
+Worker sessions use `GH_CONFIG_DIR` when set; otherwise they share the GitHub
+CLI configuration in `/mnt/zeroclaw/.zeroclaw/github`.
+
 Workers run long-lived builds and tests through `bobr-task run`. It starts one
 transient command unit for the current task and relays its output and exit
 status. `cancel` sends `SIGINT` to that unit first, waits for cooperative
