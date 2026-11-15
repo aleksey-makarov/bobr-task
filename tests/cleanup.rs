@@ -98,7 +98,7 @@ async fn send(writer: &mut tokio::net::unix::OwnedWriteHalf, value: Value) {
 }
 
 #[tokio::test]
-async fn cleanup_deletes_terminal_task_and_worker_session() {
+async fn cleanup_trashes_terminal_task_and_deletes_worker_session() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let task_id = "261115120000.cleanup-one";
@@ -153,12 +153,22 @@ async fn cleanup_deletes_terminal_task_and_worker_session() {
 
     assert!(output.status.success(), "{output:?}");
     let response: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(response["deleted"], json!([task_id]));
+    assert_eq!(response["trashed"], json!([task_id]));
     assert_eq!(response["skipped_active"], json!([]));
     assert_eq!(response["skipped_incompatible"], 0);
     assert_eq!(response["skipped_invalid"], json!([]));
+    assert_eq!(response["failed"], json!([]));
     assert_eq!(response["current_cleared"], true);
     assert!(!task_root.join(task_id).exists());
+    assert!(task_root.join(".trash").join(task_id).exists());
+    assert_eq!(
+        fs::metadata(task_root.join(".trash"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
     let state: Value = serde_json::from_slice(
         &fs::read(task_root.join(".coordinators/coordinator/state.json")).unwrap(),
     )
@@ -167,7 +177,7 @@ async fn cleanup_deletes_terminal_task_and_worker_session() {
 }
 
 #[tokio::test]
-async fn cleanup_all_deletes_terminal_tasks_and_skips_the_rest() {
+async fn cleanup_all_trashes_terminal_tasks_and_skips_the_rest() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let completed = "261115120000.completed";
@@ -210,17 +220,112 @@ async fn cleanup_all_deletes_terminal_tasks_and_skips_the_rest() {
 
     assert!(output.status.success(), "{output:?}");
     let response: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(response["deleted"], json!([failed, completed]));
+    assert_eq!(response["trashed"], json!([failed, completed]));
     assert_eq!(response["skipped_active"], json!([active]));
     assert_eq!(response["skipped_incompatible"], 1);
     assert_eq!(response["skipped_invalid"], json!([invalid]));
+    assert_eq!(response["failed"], json!([]));
     assert_eq!(response["current_cleared"], true);
     assert!(!task_root.join(completed).exists());
     assert!(!task_root.join(failed).exists());
+    assert!(task_root.join(".trash").join(completed).exists());
+    assert!(task_root.join(".trash").join(failed).exists());
     assert!(task_root.join(active).exists());
     assert!(task_root.join(foreign).exists());
     assert!(task_root.join(incompatible).exists());
     assert!(task_root.join(invalid).exists());
+}
+
+#[tokio::test]
+async fn cleanup_recreates_a_removed_trash_directory() {
+    let dir = tempdir().unwrap();
+    let task_root = dir.path().join("tasks");
+    let first = "261115120000.first";
+    let second = "261115120001.second";
+    write_task(&task_root, first, "coordinator", None, 1, Some("completed"));
+    let systemctl = fake_systemctl(dir.path(), "inactive");
+
+    let first_output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
+        .args(["cleanup", first])
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
+        .env("BOBR_TASK_ROOT", &task_root)
+        .env("BOBR_TASK_SYSTEMCTL", &systemctl)
+        .output()
+        .await
+        .unwrap();
+    assert!(first_output.status.success(), "{first_output:?}");
+    fs::remove_dir_all(task_root.join(".trash")).unwrap();
+
+    write_task(
+        &task_root,
+        second,
+        "coordinator",
+        None,
+        2,
+        Some("completed"),
+    );
+    let second_output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
+        .args(["cleanup", second])
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
+        .env("BOBR_TASK_ROOT", &task_root)
+        .env("BOBR_TASK_SYSTEMCTL", &systemctl)
+        .output()
+        .await
+        .unwrap();
+
+    assert!(second_output.status.success(), "{second_output:?}");
+    let response: Value = serde_json::from_slice(&second_output.stdout).unwrap();
+    assert_eq!(response["trashed"], json!([second]));
+    assert!(task_root.join(".trash").join(second).exists());
+}
+
+#[tokio::test]
+async fn cleanup_all_reports_a_failure_and_continues() {
+    let dir = tempdir().unwrap();
+    let task_root = dir.path().join("tasks");
+    let collision = "261115120000.collision";
+    let completed = "261115120001.completed";
+    write_task(
+        &task_root,
+        collision,
+        "coordinator",
+        None,
+        1,
+        Some("completed"),
+    );
+    write_task(
+        &task_root,
+        completed,
+        "coordinator",
+        None,
+        2,
+        Some("completed"),
+    );
+    fs::create_dir_all(task_root.join(".trash").join(collision)).unwrap();
+    let systemctl = fake_systemctl(dir.path(), "inactive");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
+        .args(["cleanup", "all"])
+        .env("ZEROCLAW_SESSION_ID", "coordinator")
+        .env("BOBR_TASK_ROOT", &task_root)
+        .env("BOBR_TASK_SYSTEMCTL", &systemctl)
+        .output()
+        .await
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["trashed"], json!([completed]));
+    assert_eq!(response["skipped_invalid"], json!([]));
+    assert_eq!(response["failed"][0]["task_id"], collision);
+    assert!(
+        response["failed"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("trash already contains task")
+    );
+    assert!(task_root.join(collision).exists());
+    assert!(task_root.join(".trash").join(completed).exists());
 }
 
 #[tokio::test]

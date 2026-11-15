@@ -28,7 +28,7 @@ Keep these invariants explicit:
 - do not add a daemon, registry, scheduler, compatibility layer, or optional
   backend without a current use case;
 - RPC and systemd interactions must be covered by fakes in tests;
-- `cleanup` is the only command allowed to delete a task directory; it
-  requires a terminal result, inactive controller and command units, and
-  deletion of the corresponding ZeroClaw worker session.
+- `cleanup` never deletes task contents; after requiring a terminal result,
+  inactive controller and command units, and deleting the corresponding
+  ZeroClaw worker session, it atomically moves the task directory to `.trash`.
 

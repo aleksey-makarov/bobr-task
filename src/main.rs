@@ -52,7 +52,7 @@ enum Command {
         /// Exact task ID or `current`.
         task_ref: String,
     },
-    /// Delete terminal tasks and their worker sessions.
+    /// Move terminal tasks to trash and delete their worker sessions.
     Cleanup {
         /// Exact task ID, `current`, or `all`.
         task_ref: String,

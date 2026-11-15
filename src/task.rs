@@ -9,7 +9,7 @@ use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -221,7 +221,7 @@ impl TaskStore {
         {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name == ".coordinators" {
+            if name == ".coordinators" || name == ".trash" {
                 continue;
             }
             if validate_task_id(&name).is_err() {
@@ -403,9 +403,27 @@ impl TaskStore {
         })
     }
 
-    pub fn remove_task(&self, task_id: &str) -> Result<()> {
-        let path = self.task_dir(task_id)?;
-        fs::remove_dir_all(&path).with_context(|| format!("remove task '{}'", path.display()))
+    pub fn trash_task(&self, task_id: &str) -> Result<()> {
+        let source = self.task_dir(task_id)?;
+        let trash = self.root.join(".trash");
+        create_private_directory(&trash)?;
+        fs::set_permissions(&trash, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("set permissions on '{}'", trash.display()))?;
+        let destination = trash.join(task_id);
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => bail!("trash already contains task '{task_id}'"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect '{}'", destination.display()));
+            }
+        }
+        fs::rename(&source, &destination).with_context(|| {
+            format!(
+                "move task '{}' to '{}'",
+                source.display(),
+                destination.display()
+            )
+        })
     }
 
     fn result_path(&self, task_id: &str, turn: u32) -> Result<PathBuf> {
