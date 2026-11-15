@@ -90,12 +90,7 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
 
     let store = TaskStore::new(&config.task_root)?;
     let _coordinator_lock = store.lock_coordinator(&coordinator_session_id)?;
-    let record = store.create(
-        label,
-        &coordinator_session_id,
-        &request,
-        &config.worker_workspace,
-    )?;
+    let record = store.create(label, &coordinator_session_id, &request)?;
     if let Err(error) = store.set_current(&coordinator_session_id, Some(&record.id)) {
         store.write_result(&TaskResult::failed(
             &record,
@@ -509,6 +504,7 @@ async fn controller_inner(
             (worker_session_id, prompt)
         }
         None => {
+            store.copy_worker_bootstrap(task_id, &config.worker_workspace)?;
             let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
             rpc.session_new(&config.worker_alias, &worker_session_id, &workspace)
                 .await?;

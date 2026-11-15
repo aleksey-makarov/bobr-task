@@ -112,17 +112,10 @@ impl TaskStore {
         label: &str,
         coordinator_session_id: &str,
         request: &str,
-        worker_workspace: &Path,
     ) -> Result<TaskRecord> {
         validate_task_label(label)?;
         let timestamp = local_timestamp(SystemTime::now())?;
-        self.create_with_timestamp(
-            label,
-            coordinator_session_id,
-            request,
-            &timestamp,
-            worker_workspace,
-        )
+        self.create_with_timestamp(label, coordinator_session_id, request, &timestamp)
     }
 
     fn create_with_timestamp(
@@ -131,7 +124,6 @@ impl TaskStore {
         coordinator_session_id: &str,
         request: &str,
         timestamp: &str,
-        worker_workspace: &Path,
     ) -> Result<TaskRecord> {
         for collision in 1..=999 {
             let id = if collision == 1 {
@@ -149,13 +141,6 @@ impl TaskStore {
                     workspace_builder
                         .create(task_dir.join("workspace/tmp"))
                         .context("create task workspace")?;
-                    for name in WORKER_BOOTSTRAP_FILES {
-                        fs::copy(
-                            worker_workspace.join(name),
-                            task_dir.join("workspace").join(name),
-                        )
-                        .with_context(|| format!("copy worker bootstrap file '{name}'"))?;
-                    }
                     let now = unix_time_ms()?;
                     let record = TaskRecord {
                         schema_version: TASK_SCHEMA_VERSION,
@@ -179,6 +164,15 @@ impl TaskStore {
             }
         }
         bail!("failed to allocate a unique task ID for '{timestamp}.{label}'")
+    }
+
+    pub fn copy_worker_bootstrap(&self, task_id: &str, worker_workspace: &Path) -> Result<()> {
+        let workspace = self.workspace_dir(task_id)?;
+        for name in WORKER_BOOTSTRAP_FILES {
+            fs::copy(worker_workspace.join(name), workspace.join(name))
+                .with_context(|| format!("copy worker bootstrap file '{name}'"))?;
+        }
+        Ok(())
     }
 
     pub fn task_dir(&self, task_id: &str) -> Result<PathBuf> {
@@ -612,10 +606,9 @@ mod tests {
     #[test]
     fn creates_private_task_and_round_trips_metadata() {
         let dir = tempdir().unwrap();
-        let worker = worker_workspace();
         let store = TaskStore::new(dir.path()).unwrap();
         let record = store
-            .create("create-hello", "coordinator", "request", worker.path())
+            .create("create-hello", "coordinator", "request")
             .unwrap();
         assert!(record.id.ends_with(".create-hello"));
         assert!(record.id[..12].bytes().all(|byte| byte.is_ascii_digit()));
@@ -639,6 +632,10 @@ mod tests {
                 0o700
             );
         }
+        let worker = worker_workspace();
+        store
+            .copy_worker_bootstrap(&record.id, worker.path())
+            .unwrap();
         for name in WORKER_BOOTSTRAP_FILES {
             assert_eq!(
                 fs::read_to_string(
@@ -667,10 +664,9 @@ mod tests {
     #[test]
     fn results_are_numbered_and_immutable() {
         let dir = tempdir().unwrap();
-        let worker = worker_workspace();
         let store = TaskStore::new(dir.path()).unwrap();
         let record = store
-            .create("cancel-task", "coordinator", "request", worker.path())
+            .create("cancel-task", "coordinator", "request")
             .unwrap();
         let result = TaskResult::cancelled(&record);
         store.write_result(&result).unwrap();
@@ -691,10 +687,9 @@ mod tests {
     #[test]
     fn reads_completed_turns_in_order() {
         let dir = tempdir().unwrap();
-        let worker = worker_workspace();
         let store = TaskStore::new(dir.path()).unwrap();
         let mut record = store
-            .create("continued-task", "coordinator", "first", worker.path())
+            .create("continued-task", "coordinator", "first")
             .unwrap();
         store
             .write_result(&TaskResult::failed(&record, "first result".into()))
@@ -717,25 +712,12 @@ mod tests {
     #[test]
     fn adds_a_numeric_suffix_to_same_second_collisions() {
         let dir = tempdir().unwrap();
-        let worker = worker_workspace();
         let store = TaskStore::new(dir.path()).unwrap();
         let first = store
-            .create_with_timestamp(
-                "same-task",
-                "coordinator",
-                "one",
-                "261110184237",
-                worker.path(),
-            )
+            .create_with_timestamp("same-task", "coordinator", "one", "261110184237")
             .unwrap();
         let second = store
-            .create_with_timestamp(
-                "same-task",
-                "coordinator",
-                "two",
-                "261110184237",
-                worker.path(),
-            )
+            .create_with_timestamp("same-task", "coordinator", "two", "261110184237")
             .unwrap();
         assert_eq!(second.id, format!("{}.2", first.id));
     }
@@ -800,40 +782,27 @@ mod tests {
     #[test]
     fn lists_owned_current_schema_tasks_by_last_use() {
         let dir = tempdir().unwrap();
-        let worker = worker_workspace();
         let store = TaskStore::new(dir.path()).unwrap();
         let mut older = store
-            .create_with_timestamp("older", "coordinator", "one", "261110184237", worker.path())
+            .create_with_timestamp("older", "coordinator", "one", "261110184237")
             .unwrap();
         older.last_used_unix_ms = 10;
         store.write_record(&older).unwrap();
         let mut newer = store
-            .create_with_timestamp("newer", "coordinator", "two", "261110184238", worker.path())
+            .create_with_timestamp("newer", "coordinator", "two", "261110184238")
             .unwrap();
         newer.last_used_unix_ms = 20;
         store.write_record(&newer).unwrap();
         let mut same_time = store
-            .create_with_timestamp(
-                "same-time",
-                "coordinator",
-                "tie",
-                "261110184241",
-                worker.path(),
-            )
+            .create_with_timestamp("same-time", "coordinator", "tie", "261110184241")
             .unwrap();
         same_time.last_used_unix_ms = 20;
         store.write_record(&same_time).unwrap();
         store
-            .create_with_timestamp("foreign", "other", "three", "261110184239", worker.path())
+            .create_with_timestamp("foreign", "other", "three", "261110184239")
             .unwrap();
         let mut incompatible = store
-            .create_with_timestamp(
-                "old-schema",
-                "coordinator",
-                "four",
-                "261110184240",
-                worker.path(),
-            )
+            .create_with_timestamp("old-schema", "coordinator", "four", "261110184240")
             .unwrap();
         incompatible.schema_version = 2;
         store.write_record(&incompatible).unwrap();
