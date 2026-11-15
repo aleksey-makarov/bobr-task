@@ -49,12 +49,14 @@ falling back to an older task; cancelled tasks remain available by exact ID but
 cannot be selected again.
 
 `cleanup` deletes the corresponding ZeroClaw worker session and atomically
-moves the terminal task directory under `.trash`; it never deletes task
-contents. The trash directory is recreated when needed. The command refuses an
-active task. `cleanup all` processes all terminal tasks owned by the current
-coordinator dialog, skips active tasks, and reports incompatible, invalid, or
-failed tasks without stopping at the first failure. Cleaning the selected task
-clears `current` without selecting a replacement.
+renames the terminal task directory to the sibling `.trash-<task-id>`; it
+never deletes task contents. Keeping source and destination under the same
+parent also makes the rename compatible with ZeroClaw's Landlock sandbox. The
+command refuses an active task. `cleanup all` processes all terminal tasks
+owned by the current coordinator dialog, skips active tasks, ignores existing
+trash entries, and reports incompatible, invalid, or failed tasks without
+stopping at the first failure. Cleaning the selected task clears `current`
+without selecting a replacement.
 
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and

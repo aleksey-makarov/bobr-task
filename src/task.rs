@@ -9,7 +9,7 @@ use std::ffi::CStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -221,7 +221,7 @@ impl TaskStore {
         {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name == ".coordinators" || name == ".trash" {
+            if name == ".coordinators" || name == ".trash" || name.starts_with(".trash-") {
                 continue;
             }
             if validate_task_id(&name).is_err() {
@@ -405,11 +405,7 @@ impl TaskStore {
 
     pub fn trash_task(&self, task_id: &str) -> Result<()> {
         let source = self.task_dir(task_id)?;
-        let trash = self.root.join(".trash");
-        create_private_directory(&trash)?;
-        fs::set_permissions(&trash, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("set permissions on '{}'", trash.display()))?;
-        let destination = trash.join(task_id);
+        let destination = self.root.join(format!(".trash-{task_id}"));
         match fs::symlink_metadata(&destination) {
             Ok(_) => bail!("trash already contains task '{task_id}'"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

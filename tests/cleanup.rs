@@ -17,6 +17,7 @@ fn write_task(
 ) {
     let task_dir = task_root.join(task_id);
     fs::create_dir_all(task_dir.join("workspace/tmp")).unwrap();
+    fs::set_permissions(&task_dir, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
@@ -160,9 +161,9 @@ async fn cleanup_trashes_terminal_task_and_deletes_worker_session() {
     assert_eq!(response["failed"], json!([]));
     assert_eq!(response["current_cleared"], true);
     assert!(!task_root.join(task_id).exists());
-    assert!(task_root.join(".trash").join(task_id).exists());
+    assert!(task_root.join(format!(".trash-{task_id}")).exists());
     assert_eq!(
-        fs::metadata(task_root.join(".trash"))
+        fs::metadata(task_root.join(format!(".trash-{task_id}")))
             .unwrap()
             .permissions()
             .mode()
@@ -186,6 +187,7 @@ async fn cleanup_all_trashes_terminal_tasks_and_skips_the_rest() {
     let foreign = "261115120003.foreign";
     let incompatible = "261115120004.incompatible";
     let invalid = "261115120005.invalid";
+    let old_trash = ".trash-261115120006.old";
     write_task(
         &task_root,
         completed,
@@ -206,6 +208,8 @@ async fn cleanup_all_trashes_terminal_tasks_and_skips_the_rest() {
     );
     write_incompatible_task(&task_root, incompatible);
     fs::create_dir_all(task_root.join(invalid).join("workspace")).unwrap();
+    fs::create_dir_all(task_root.join(".trash")).unwrap();
+    fs::create_dir_all(task_root.join(old_trash)).unwrap();
     write_current(&task_root, completed);
     let systemctl = fake_systemctl(dir.path(), "inactive");
 
@@ -228,16 +232,18 @@ async fn cleanup_all_trashes_terminal_tasks_and_skips_the_rest() {
     assert_eq!(response["current_cleared"], true);
     assert!(!task_root.join(completed).exists());
     assert!(!task_root.join(failed).exists());
-    assert!(task_root.join(".trash").join(completed).exists());
-    assert!(task_root.join(".trash").join(failed).exists());
+    assert!(task_root.join(format!(".trash-{completed}")).exists());
+    assert!(task_root.join(format!(".trash-{failed}")).exists());
     assert!(task_root.join(active).exists());
     assert!(task_root.join(foreign).exists());
     assert!(task_root.join(incompatible).exists());
     assert!(task_root.join(invalid).exists());
+    assert!(task_root.join(".trash").exists());
+    assert!(task_root.join(old_trash).exists());
 }
 
 #[tokio::test]
-async fn cleanup_recreates_a_removed_trash_directory() {
+async fn cleanup_uses_independent_sibling_trash_names() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let first = "261115120000.first";
@@ -254,7 +260,6 @@ async fn cleanup_recreates_a_removed_trash_directory() {
         .await
         .unwrap();
     assert!(first_output.status.success(), "{first_output:?}");
-    fs::remove_dir_all(task_root.join(".trash")).unwrap();
 
     write_task(
         &task_root,
@@ -276,7 +281,8 @@ async fn cleanup_recreates_a_removed_trash_directory() {
     assert!(second_output.status.success(), "{second_output:?}");
     let response: Value = serde_json::from_slice(&second_output.stdout).unwrap();
     assert_eq!(response["trashed"], json!([second]));
-    assert!(task_root.join(".trash").join(second).exists());
+    assert!(task_root.join(format!(".trash-{first}")).exists());
+    assert!(task_root.join(format!(".trash-{second}")).exists());
 }
 
 #[tokio::test]
@@ -301,7 +307,7 @@ async fn cleanup_all_reports_a_failure_and_continues() {
         2,
         Some("completed"),
     );
-    fs::create_dir_all(task_root.join(".trash").join(collision)).unwrap();
+    fs::create_dir_all(task_root.join(format!(".trash-{collision}"))).unwrap();
     let systemctl = fake_systemctl(dir.path(), "inactive");
 
     let output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
@@ -325,7 +331,7 @@ async fn cleanup_all_reports_a_failure_and_continues() {
             .contains("trash already contains task")
     );
     assert!(task_root.join(collision).exists());
-    assert!(task_root.join(".trash").join(completed).exists());
+    assert!(task_root.join(format!(".trash-{completed}")).exists());
 }
 
 #[tokio::test]

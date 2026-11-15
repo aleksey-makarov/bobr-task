@@ -30,5 +30,6 @@ Keep these invariants explicit:
 - RPC and systemd interactions must be covered by fakes in tests;
 - `cleanup` never deletes task contents; after requiring a terminal result,
   inactive controller and command units, and deleting the corresponding
-  ZeroClaw worker session, it atomically moves the task directory to `.trash`.
+  ZeroClaw worker session, it atomically renames the task directory to the
+  sibling `.trash-<task-id>`.
 
