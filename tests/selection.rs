@@ -4,13 +4,6 @@ use std::path::Path;
 use tempfile::tempdir;
 use tokio::process::Command;
 
-fn write_worker_workspace(path: &Path) {
-    fs::create_dir(path).unwrap();
-    for name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"] {
-        fs::write(path.join(name), format!("contents of {name}\n")).unwrap();
-    }
-}
-
 fn write_task(
     task_root: &Path,
     task_id: &str,
@@ -170,9 +163,7 @@ async fn failed_start_clears_the_new_current_task() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let coordinator = dir.path().join("coordinator");
-    let worker_workspace = dir.path().join("worker");
     fs::create_dir(&coordinator).unwrap();
-    write_worker_workspace(&worker_workspace);
     fs::write(coordinator.join("request.md"), "test request\n").unwrap();
     let systemd_run = dir.path().join("systemd-run");
     fs::write(&systemd_run, "#!/bin/sh\necho launch failed >&2\nexit 1\n").unwrap();
@@ -186,7 +177,6 @@ async fn failed_start_clears_the_new_current_task() {
         .current_dir(&coordinator)
         .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
-        .env("BOBR_TASK_WORKER_WORKSPACE", &worker_workspace)
         .env("BOBR_TASK_SYSTEMD_RUN", &systemd_run)
         .env(
             "BOBR_TASK_BASE_PATH",
@@ -223,9 +213,7 @@ async fn successful_start_selects_the_new_task() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let coordinator = dir.path().join("coordinator");
-    let worker_workspace = dir.path().join("worker");
     fs::create_dir(&coordinator).unwrap();
-    write_worker_workspace(&worker_workspace);
     fs::write(coordinator.join("request.md"), "test request\n").unwrap();
     let systemd_run = dir.path().join("systemd-run");
     fs::write(&systemd_run, "#!/bin/sh\nexit 0\n").unwrap();
@@ -239,7 +227,6 @@ async fn successful_start_selects_the_new_task() {
         .current_dir(&coordinator)
         .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
-        .env("BOBR_TASK_WORKER_WORKSPACE", &worker_workspace)
         .env("BOBR_TASK_SYSTEMD_RUN", &systemd_run)
         .env(
             "BOBR_TASK_BASE_PATH",

@@ -28,16 +28,10 @@ The coordinator supplies a one- or two-word lowercase label such as
 ID such as `261110184237.create-hello`; a same-second collision gets a numeric
 suffix. It reads the current coordinator session ID from
 `ZEROCLAW_SESSION_ID`, copies the explicit request into task metadata, and
-never reconstructs a request from conversation history. The transient
-controller copies the worker's `AGENTS.md`, `SOUL.md`, `TOOLS.md`,
-`IDENTITY.md`, and `USER.md` into the new workspace immediately before
-creating the ZeroClaw session. User text is read from the file rather than
-interpolated into a shell command.
-
-Bootstrap files come from
-`/mnt/zeroclaw/.zeroclaw/agents/bobr_worker/workspace` by default. Set
-`BOBR_TASK_WORKER_WORKSPACE` to an absolute path to use another canonical
-worker workspace.
+never reconstructs a request from conversation history. User text is read from
+the file rather than interpolated into a shell command. ZeroClaw loads identity
+and instruction files from the configured `bobr_worker` workspace; the task
+workspace controls the worker's current directory and tool state.
 
 `continue` sends a follow-up request to the same worker session in the same
 workspace. Completed turns are kept as immutable `result.NNNN.json` files;

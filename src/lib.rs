@@ -504,7 +504,6 @@ async fn controller_inner(
             (worker_session_id, prompt)
         }
         None => {
-            store.copy_worker_bootstrap(task_id, &config.worker_workspace)?;
             let worker_session_id = format!("bobr-task-{}", runtime_name(task_id));
             rpc.session_new(&config.worker_alias, &worker_session_id, &workspace)
                 .await?;

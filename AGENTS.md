@@ -17,8 +17,8 @@ Keep these invariants explicit:
 - ZeroClaw remains the authority for agent sessions and systemd remains the
   authority for processes;
 - a task's `workspace/` is both the worker's current directory and `HOME`;
-  `TMPDIR` is `workspace/tmp/`, and new tasks receive snapshots of the fixed
-  worker bootstrap files before their ZeroClaw session starts;
+  `TMPDIR` is `workspace/tmp/`; ZeroClaw loads identity and instructions from
+  the canonical agent workspace independently of this session directory;
 - worker `PATH` and `GH_CONFIG_DIR` are constructed explicitly; the base
   `PATH` comes from `BOBR_TASK_BASE_PATH`, never from the daemon's ambient
   environment;

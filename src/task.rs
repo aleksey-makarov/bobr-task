@@ -15,8 +15,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const TASK_SCHEMA_VERSION: u32 = 4;
 const COORDINATOR_STATE_SCHEMA_VERSION: u32 = 1;
-const WORKER_BOOTSTRAP_FILES: [&str; 5] =
-    ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TaskRecord {
@@ -164,15 +162,6 @@ impl TaskStore {
             }
         }
         bail!("failed to allocate a unique task ID for '{timestamp}.{label}'")
-    }
-
-    pub fn copy_worker_bootstrap(&self, task_id: &str, worker_workspace: &Path) -> Result<()> {
-        let workspace = self.workspace_dir(task_id)?;
-        for name in WORKER_BOOTSTRAP_FILES {
-            fs::copy(worker_workspace.join(name), workspace.join(name))
-                .with_context(|| format!("copy worker bootstrap file '{name}'"))?;
-        }
-        Ok(())
     }
 
     pub fn task_dir(&self, task_id: &str) -> Result<PathBuf> {
@@ -593,15 +582,7 @@ fn write_json_once(path: &Path, value: &impl Serialize) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, symlink};
-    use tempfile::{TempDir, tempdir};
-
-    fn worker_workspace() -> TempDir {
-        let dir = tempdir().unwrap();
-        for name in WORKER_BOOTSTRAP_FILES {
-            fs::write(dir.path().join(name), format!("contents of {name}\n")).unwrap();
-        }
-        dir
-    }
+    use tempfile::tempdir;
 
     #[test]
     fn creates_private_task_and_round_trips_metadata() {
@@ -630,23 +611,6 @@ mod tests {
                     .mode()
                     & 0o777,
                 0o700
-            );
-        }
-        let worker = worker_workspace();
-        store
-            .copy_worker_bootstrap(&record.id, worker.path())
-            .unwrap();
-        for name in WORKER_BOOTSTRAP_FILES {
-            assert_eq!(
-                fs::read_to_string(
-                    store
-                        .task_dir(&record.id)
-                        .unwrap()
-                        .join("workspace")
-                        .join(name)
-                )
-                .unwrap(),
-                format!("contents of {name}\n")
             );
         }
     }

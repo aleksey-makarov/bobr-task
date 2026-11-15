@@ -12,7 +12,6 @@ pub struct Systemd {
     task_root: PathBuf,
     rpc_socket: PathBuf,
     github_config_dir: PathBuf,
-    worker_workspace: PathBuf,
     worker_alias: String,
 }
 
@@ -24,7 +23,6 @@ impl Systemd {
             task_root: config.task_root.clone(),
             rpc_socket: config.rpc_socket.clone(),
             github_config_dir: config.github_config_dir.clone(),
-            worker_workspace: config.worker_workspace.clone(),
             worker_alias: config.worker_alias.clone(),
         }
     }
@@ -67,10 +65,6 @@ impl Systemd {
             .arg(format!(
                 "--setenv=GH_CONFIG_DIR={}",
                 self.github_config_dir.display()
-            ))
-            .arg(format!(
-                "--setenv=BOBR_TASK_WORKER_WORKSPACE={}",
-                self.worker_workspace.display()
             ))
             .arg(format!(
                 "--setenv=BOBR_TASK_WORKER_ALIAS={}",
@@ -210,7 +204,6 @@ mod tests {
             task_root: "/tasks".into(),
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
-            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: "systemd-run".into(),
             systemctl: "systemctl".into(),
@@ -249,7 +242,6 @@ mod tests {
             task_root,
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
-            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: fake,
             systemctl: "systemctl".into(),
@@ -286,7 +278,6 @@ mod tests {
             task_dir.join("workspace").display()
         )));
         assert!(arguments.contains("--setenv=GH_CONFIG_DIR=/github\n"));
-        assert!(arguments.contains("--setenv=BOBR_TASK_WORKER_WORKSPACE=/worker\n"));
         assert!(
             arguments
                 .contains("--setenv=BOBR_TASK_BASE_PATH=/run/wrappers/bin:/nix/store/agent/bin\n")
@@ -318,7 +309,6 @@ mod tests {
             task_root: task_root.clone(),
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
-            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: fake,
             systemctl: "systemctl".into(),
@@ -387,7 +377,6 @@ mod tests {
             task_root: dir.path().join("tasks"),
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
-            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: "systemd-run".into(),
             systemctl: fake,
