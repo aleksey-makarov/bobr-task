@@ -22,10 +22,11 @@ bobr-task cancel <task-id|current>
 bobr-task run -- <command> [args...]
 ```
 
-The coordinator supplies a one- or two-word lowercase label such as
-`create-hello` and a relative path to a UTF-8 request file in its workspace.
-`start` combines the label with local time to create a naturally sortable task
-ID such as `261110184237.create-hello`; a same-second collision gets a numeric
+The coordinator supplies a concise lowercase label with words separated by
+hyphens, such as `check-bobr-release-gate`, and a relative path to a UTF-8
+request file in its workspace. `start` combines the label with local time to
+create a naturally sortable task ID such as
+`261110184237.check-bobr-release-gate`; a same-second collision gets a numeric
 suffix. It reads the current coordinator session ID from
 `ZEROCLAW_SESSION_ID`, copies the explicit request into task metadata, and
 never reconstructs a request from conversation history. User text is read from

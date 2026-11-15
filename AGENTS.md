@@ -11,9 +11,9 @@ Keep these invariants explicit:
   `.coordinators/<session-id>/`; task commands enforce ownership, and
   cancellation clears only the matching selection without fallback;
 - the coordinator invokes `bobr-task start <short-label> <request-file>`; the
-  label is its own one- or two-word summary, the request is a regular UTF-8 file
-  below the coordinator workspace, and arbitrary user text never becomes shell
-  syntax;
+  label is its own concise lowercase hyphen-separated summary, the request is a
+  regular UTF-8 file below the coordinator workspace, and arbitrary user text
+  never becomes shell syntax;
 - ZeroClaw remains the authority for agent sessions and systemd remains the
   authority for processes;
 - a task's `workspace/` is both the worker's current directory and `HOME`;

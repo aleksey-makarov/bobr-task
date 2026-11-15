@@ -14,7 +14,7 @@ struct Cli {
 enum Command {
     /// Start a worker task from the current ZeroClaw coordinator session.
     Start {
-        /// Short one- or two-word name for the task.
+        /// Lowercase words separated by hyphens naming the task.
         label: String,
         /// UTF-8 task request below the coordinator workspace.
         request_file: PathBuf,

@@ -7,6 +7,7 @@ pub const DEFAULT_RPC_SOCKET: &str = "/mnt/zeroclaw/.zeroclaw/data/daemon.sock";
 pub const DEFAULT_GITHUB_CONFIG_DIR: &str = "/mnt/zeroclaw/.zeroclaw/github";
 pub const DEFAULT_WORKER_ALIAS: &str = "bobr_worker";
 pub const BOBR_TASK_BASE_PATH: &str = "BOBR_TASK_BASE_PATH";
+const MAX_TASK_LABEL_LEN: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -91,18 +92,18 @@ pub fn validate_task_id(task_id: &str) -> Result<()> {
 }
 
 pub fn validate_task_label(label: &str) -> Result<()> {
-    let words: Vec<_> = label.split('-').collect();
     if label.is_empty()
-        || label.len() > 24
-        || !(1..=2).contains(&words.len())
-        || words.iter().any(|word| {
+        || label.len() > MAX_TASK_LABEL_LEN
+        || label.split('-').any(|word| {
             word.is_empty()
                 || !word
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         })
     {
-        bail!("invalid task label '{label}'; expected one or two lowercase words");
+        bail!(
+            "invalid task label '{label}'; expected at most {MAX_TASK_LABEL_LEN} bytes of lowercase words separated by hyphens"
+        );
     }
     Ok(())
 }
@@ -151,7 +152,6 @@ mod tests {
             "261110184237",
             "261110184237.Create-hello",
             "261110184237.create_three_words",
-            "261110184237.create-three-words",
             "261110184237.create-hello.0",
             "261110184237.create-hello.02",
             "261110184237.create-hello.extra",
@@ -162,16 +162,22 @@ mod tests {
     }
 
     #[test]
-    fn accepts_short_task_labels() {
-        for value in ["release", "create-hello", "fix-tls2"] {
+    fn accepts_task_labels() {
+        for value in [
+            "release",
+            "create-hello",
+            "fix-tls2",
+            "create-three-or-more-words",
+            "this-label-is-long-but-still-clear-and-within-the-limit",
+        ] {
             validate_task_label(value).unwrap();
         }
         for value in [
             "",
             "Create-hello",
             "create_hello",
-            "create-three-words",
-            "this-label-is-much-too-long",
+            "create--hello",
+            "this-label-is-deliberately-longer-than-the-sixty-four-byte-limit-for-task-labels",
         ] {
             assert!(validate_task_label(value).is_err(), "accepted {value:?}");
         }
