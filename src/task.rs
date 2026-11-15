@@ -53,12 +53,6 @@ pub struct TaskRecords {
     pub skipped_invalid: Vec<String>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum TrashTaskOutcome {
-    Moved,
-    RequiresUnrestrictedRename,
-}
-
 #[derive(Deserialize)]
 struct TaskRecordHeader {
     schema_version: u32,
@@ -409,7 +403,7 @@ impl TaskStore {
         })
     }
 
-    pub fn trash_task(&self, task_id: &str) -> Result<TrashTaskOutcome> {
+    pub fn trash_task(&self, task_id: &str) -> Result<()> {
         let source = self.task_dir(task_id)?;
         let trash = self.root.join(".trash");
         create_private_directory(&trash)?;
@@ -423,19 +417,13 @@ impl TaskStore {
                 return Err(error).with_context(|| format!("inspect '{}'", destination.display()));
             }
         }
-        match fs::rename(&source, &destination) {
-            Ok(()) => Ok(TrashTaskOutcome::Moved),
-            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                Ok(TrashTaskOutcome::RequiresUnrestrictedRename)
-            }
-            Err(error) => Err(error).with_context(|| {
-                format!(
-                    "move task '{}' to '{}'",
-                    source.display(),
-                    destination.display()
-                )
-            }),
-        }
+        fs::rename(&source, &destination).with_context(|| {
+            format!(
+                "move task '{}' to '{}'",
+                source.display(),
+                destination.display()
+            )
+        })
     }
 
     fn result_path(&self, task_id: &str, turn: u32) -> Result<PathBuf> {

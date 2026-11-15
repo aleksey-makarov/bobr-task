@@ -280,32 +280,6 @@ async fn cleanup_recreates_a_removed_trash_directory() {
 }
 
 #[tokio::test]
-async fn move_to_trash_completes_the_internal_rename() {
-    let dir = tempdir().unwrap();
-    let task_root = dir.path().join("tasks");
-    let task_id = "261115120000.internal-move";
-    write_task(
-        &task_root,
-        task_id,
-        "coordinator",
-        None,
-        1,
-        Some("completed"),
-    );
-
-    let output = Command::new(env!("CARGO_BIN_EXE_bobr-task"))
-        .args(["move-to-trash", task_id])
-        .env("BOBR_TASK_ROOT", &task_root)
-        .output()
-        .await
-        .unwrap();
-
-    assert!(output.status.success(), "{output:?}");
-    assert!(!task_root.join(task_id).exists());
-    assert!(task_root.join(".trash").join(task_id).exists());
-}
-
-#[tokio::test]
 async fn cleanup_all_reports_a_failure_and_continues() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");

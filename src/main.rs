@@ -72,9 +72,6 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<OsString>,
     },
-    /// Complete a task rename outside the coordinator's Landlock sandbox.
-    #[command(hide = true)]
-    MoveToTrash { task_id: String },
 }
 
 #[tokio::main]
@@ -106,6 +103,5 @@ async fn main() -> Result<()> {
         }
         Command::Controller { task_id } => bobr_task::controller(&task_id).await,
         Command::Exec { task_id, command } => bobr_task::exec(&task_id, &command),
-        Command::MoveToTrash { task_id } => bobr_task::move_task_to_trash(&task_id),
     }
 }

@@ -56,10 +56,6 @@ coordinator dialog, skips active tasks, and reports incompatible, invalid, or
 failed tasks without stopping at the first failure. Cleaning the selected task
 clears `current` without selecting a replacement.
 
-ZeroClaw's Landlock sandbox rejects cross-directory renames with `EXDEV`.
-In that case Bobr Task repeats only the atomic rename in a restricted transient
-user unit; it never falls back to copying task contents.
-
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and
 `~/.cargo/bin` followed by that base path; it does not inherit the daemon's
