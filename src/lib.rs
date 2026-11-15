@@ -56,6 +56,7 @@ struct CleanupOutput {
     deleted: Vec<String>,
     skipped_active: Vec<String>,
     skipped_incompatible: usize,
+    skipped_invalid: Vec<String>,
     current_cleared: bool,
 }
 
@@ -80,6 +81,7 @@ struct TaskSummary {
 struct ListOutput {
     current_task_id: Option<String>,
     skipped_incompatible: usize,
+    skipped_invalid: Vec<String>,
     tasks: Vec<TaskSummary>,
 }
 
@@ -215,6 +217,7 @@ pub async fn list() -> Result<()> {
     print_json(&ListOutput {
         current_task_id,
         skipped_incompatible: listed.skipped_incompatible,
+        skipped_invalid: listed.skipped_invalid,
         tasks,
     })
 }
@@ -398,6 +401,7 @@ pub async fn cleanup(task_ref: &str) -> Result<()> {
                 task_ref,
             )?],
             skipped_incompatible: 0,
+            skipped_invalid: Vec::new(),
         }
     };
     let all = task_ref == "all";
@@ -406,6 +410,7 @@ pub async fn cleanup(task_ref: &str) -> Result<()> {
         deleted: Vec::new(),
         skipped_active: Vec::new(),
         skipped_incompatible: listed.skipped_incompatible,
+        skipped_invalid: listed.skipped_invalid,
         current_cleared: false,
     };
 

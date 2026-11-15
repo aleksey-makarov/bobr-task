@@ -156,6 +156,7 @@ async fn cleanup_deletes_terminal_task_and_worker_session() {
     assert_eq!(response["deleted"], json!([task_id]));
     assert_eq!(response["skipped_active"], json!([]));
     assert_eq!(response["skipped_incompatible"], 0);
+    assert_eq!(response["skipped_invalid"], json!([]));
     assert_eq!(response["current_cleared"], true);
     assert!(!task_root.join(task_id).exists());
     let state: Value = serde_json::from_slice(
@@ -174,6 +175,7 @@ async fn cleanup_all_deletes_terminal_tasks_and_skips_the_rest() {
     let active = "261115120002.active";
     let foreign = "261115120003.foreign";
     let incompatible = "261115120004.incompatible";
+    let invalid = "261115120005.invalid";
     write_task(
         &task_root,
         completed,
@@ -193,6 +195,7 @@ async fn cleanup_all_deletes_terminal_tasks_and_skips_the_rest() {
         Some("completed"),
     );
     write_incompatible_task(&task_root, incompatible);
+    fs::create_dir_all(task_root.join(invalid).join("workspace")).unwrap();
     write_current(&task_root, completed);
     let systemctl = fake_systemctl(dir.path(), "inactive");
 
@@ -210,12 +213,14 @@ async fn cleanup_all_deletes_terminal_tasks_and_skips_the_rest() {
     assert_eq!(response["deleted"], json!([failed, completed]));
     assert_eq!(response["skipped_active"], json!([active]));
     assert_eq!(response["skipped_incompatible"], 1);
+    assert_eq!(response["skipped_invalid"], json!([invalid]));
     assert_eq!(response["current_cleared"], true);
     assert!(!task_root.join(completed).exists());
     assert!(!task_root.join(failed).exists());
     assert!(task_root.join(active).exists());
     assert!(task_root.join(foreign).exists());
     assert!(task_root.join(incompatible).exists());
+    assert!(task_root.join(invalid).exists());
 }
 
 #[tokio::test]

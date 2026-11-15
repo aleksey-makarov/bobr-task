@@ -51,8 +51,8 @@ cannot be selected again.
 `cleanup` deletes terminal task state and the corresponding ZeroClaw worker
 session. It refuses an active task. `cleanup all` removes all terminal tasks
 owned by the current coordinator dialog, skips active tasks, and reports
-incompatible task schemas without deleting them. Deleting the selected task
-clears `current` without selecting a replacement.
+incompatible or invalid task directories without deleting them. Deleting the
+selected task clears `current` without selecting a replacement.
 
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and

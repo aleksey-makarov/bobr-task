@@ -50,6 +50,7 @@ struct CoordinatorState {
 pub struct TaskRecords {
     pub records: Vec<TaskRecord>,
     pub skipped_incompatible: usize,
+    pub skipped_invalid: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -214,32 +215,36 @@ impl TaskStore {
         validate_session_id(coordinator_session_id)?;
         let mut records = Vec::new();
         let mut skipped_incompatible = 0;
+        let mut skipped_invalid = Vec::new();
         for entry in fs::read_dir(&self.root)
             .with_context(|| format!("read task root '{}'", self.root.display()))?
         {
             let entry = entry?;
-            let name = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("task root contains a non-UTF-8 entry"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
             if name == ".coordinators" {
                 continue;
             }
-            validate_task_id(&name)?;
+            if validate_task_id(&name).is_err() {
+                skipped_invalid.push(name);
+                continue;
+            }
             let file_type = entry.file_type()?;
             if file_type.is_symlink() || !file_type.is_dir() {
-                bail!(
-                    "task root entry '{}' is not a directory",
-                    entry.path().display()
-                );
+                skipped_invalid.push(name);
+                continue;
             }
             let metadata_path = entry.path().join("task.json");
-            let data = fs::read(&metadata_path)
-                .with_context(|| format!("read '{}'", metadata_path.display()))?;
-            let header: TaskRecordHeader = serde_json::from_slice(&data)
-                .with_context(|| format!("decode '{}'", metadata_path.display()))?;
+            let Ok(data) = fs::read(&metadata_path) else {
+                skipped_invalid.push(name);
+                continue;
+            };
+            let Ok(header) = serde_json::from_slice::<TaskRecordHeader>(&data) else {
+                skipped_invalid.push(name);
+                continue;
+            };
             if header.id != name {
-                bail!("task metadata does not match task '{name}'");
+                skipped_invalid.push(name);
+                continue;
             }
             if header.coordinator_session_id != coordinator_session_id {
                 continue;
@@ -248,7 +253,10 @@ impl TaskStore {
                 skipped_incompatible += 1;
                 continue;
             }
-            records.push(self.read_record(&name)?);
+            match self.read_record(&name) {
+                Ok(record) => records.push(record),
+                Err(_) => skipped_invalid.push(name),
+            }
         }
         records.sort_by(|left, right| {
             right
@@ -259,6 +267,7 @@ impl TaskStore {
         Ok(TaskRecords {
             records,
             skipped_incompatible,
+            skipped_invalid,
         })
     }
 
@@ -778,6 +787,7 @@ mod tests {
 
         let listed = store.list_records("coordinator").unwrap();
         assert_eq!(listed.skipped_incompatible, 1);
+        assert!(listed.skipped_invalid.is_empty());
         assert_eq!(
             listed
                 .records

@@ -136,6 +136,7 @@ async fn selects_and_resolves_the_current_task() {
     let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(listed["current_task_id"], first);
     assert_eq!(listed["skipped_incompatible"], 1);
+    assert_eq!(listed["skipped_invalid"], json!([]));
     let tasks = listed["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 3);
     assert_eq!(tasks[0]["task_id"], first);
