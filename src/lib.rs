@@ -17,7 +17,9 @@ use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use systemd::Systemd;
-use task::{TaskRecord, TaskResult, TaskStore, command_unit, runtime_name, task_label};
+use task::{
+    TaskRecord, TaskResult, TaskStore, TrashTaskOutcome, command_unit, runtime_name, task_label,
+};
 
 /// Environment variable installed by ZeroClaw's shell tool for the active
 /// coordinator session.
@@ -469,9 +471,27 @@ async fn cleanup_task(
             .await
             .with_context(|| format!("delete worker session '{session_id}'"))?;
     }
-    store.trash_task(task_id)?;
+    if store.trash_task(task_id)? == TrashTaskOutcome::RequiresUnrestrictedRename {
+        let executable = env::current_exe().context("resolve bobr-task executable")?;
+        systemd
+            .move_task_to_trash(task_id, &executable)
+            .await
+            .context("move task to trash outside the Landlock sandbox")?;
+    }
     let current_cleared = store.clear_current_if(coordinator_session_id, task_id)?;
     Ok(CleanupTaskOutcome::Trashed { current_cleared })
+}
+
+/// Complete the rename from a restricted transient unit outside Landlock.
+pub fn move_task_to_trash(task_id: &str) -> Result<()> {
+    let config = Config::from_env()?;
+    let store = TaskStore::new(&config.task_root)?;
+    match store.trash_task(task_id)? {
+        TrashTaskOutcome::Moved => Ok(()),
+        TrashTaskOutcome::RequiresUnrestrictedRename => {
+            bail!("task root and trash directory are on different filesystems")
+        }
+    }
 }
 
 /// Run one long-lived command in the current task's transient command unit.

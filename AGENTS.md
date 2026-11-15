@@ -31,4 +31,6 @@ Keep these invariants explicit:
 - `cleanup` never deletes task contents; after requiring a terminal result,
   inactive controller and command units, and deleting the corresponding
   ZeroClaw worker session, it atomically moves the task directory to `.trash`.
+  Landlock's `EXDEV` is handled only by repeating the rename in a restricted
+  transient unit; cleanup must never fall back to copying task contents.
 

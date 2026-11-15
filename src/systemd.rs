@@ -179,6 +179,49 @@ impl Systemd {
         Ok(())
     }
 
+    pub async fn move_task_to_trash(&self, task_id: &str, executable: &Path) -> Result<()> {
+        let unit = format!(
+            "bobr-task-{}-cleanup.service",
+            crate::task::runtime_name(task_id)
+        );
+        let mut command = self.user_command(&self.systemd_run);
+        command
+            .arg("--user")
+            .arg("--quiet")
+            .arg("--wait")
+            .arg("--pipe")
+            .arg("--collect")
+            .arg(format!("--unit={unit}"))
+            .arg("--property=Type=exec")
+            .arg("--property=NoNewPrivileges=yes")
+            .arg("--property=ProtectHome=yes")
+            .arg("--property=ProtectSystem=strict")
+            .arg("--property=UMask=0077")
+            .arg(format!(
+                "--property=ReadWritePaths={}",
+                self.task_root.display()
+            ))
+            .arg(format!("--working-directory={}", self.task_root.display()))
+            .arg(format!(
+                "--setenv=BOBR_TASK_ROOT={}",
+                self.task_root.display()
+            ))
+            .arg(executable)
+            .arg("move-to-trash")
+            .arg(task_id);
+        let output = command
+            .output()
+            .await
+            .context("run cleanup transient unit")?;
+        if !output.status.success() {
+            bail!(
+                "cleanup transient unit failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
     fn user_command(&self, program: &Path) -> Command {
         let uid = current_uid();
         let runtime_dir = format!("/run/user/{uid}");
@@ -357,6 +400,59 @@ mod tests {
                 "exec\n261110184237.test-task\n--\nbin/bobr-build.sh\n--target\nworld\n"
             )
         );
+    }
+
+    #[tokio::test]
+    async fn move_task_to_trash_uses_a_restricted_transient_unit() {
+        let dir = tempdir().unwrap();
+        let task_root = dir.path().join("tasks");
+        fs::create_dir_all(&task_root).unwrap();
+        let arguments = dir.path().join("arguments");
+        let fake = dir.path().join("systemd-run");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                arguments.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = Config {
+            task_root: task_root.clone(),
+            rpc_socket: "/rpc.sock".into(),
+            github_config_dir: "/github".into(),
+            worker_alias: "worker".into(),
+            systemd_run: fake,
+            systemctl: "systemctl".into(),
+        };
+        let task_id = "261110184237.test-task";
+
+        Systemd::new(&config)
+            .move_task_to_trash(task_id, Path::new("/nix/store/bobr-task/bin/bobr-task"))
+            .await
+            .unwrap();
+
+        let arguments = fs::read_to_string(arguments).unwrap();
+        for expected in [
+            "--wait\n",
+            "--pipe\n",
+            "--collect\n",
+            "--unit=bobr-task-261110184237-test-task-cleanup.service\n",
+            "--property=NoNewPrivileges=yes\n",
+            "--property=ProtectHome=yes\n",
+            "--property=ProtectSystem=strict\n",
+            "--property=UMask=0077\n",
+        ] {
+            assert!(arguments.contains(expected), "missing {expected:?}");
+        }
+        assert!(arguments.contains(&format!(
+            "--property=ReadWritePaths={}\n",
+            task_root.display()
+        )));
+        assert!(arguments.ends_with(
+            "/nix/store/bobr-task/bin/bobr-task\nmove-to-trash\n261110184237.test-task\n"
+        ));
     }
 
     #[tokio::test]
