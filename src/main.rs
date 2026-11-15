@@ -52,6 +52,11 @@ enum Command {
         /// Exact task ID or `current`.
         task_ref: String,
     },
+    /// Delete terminal tasks and their worker sessions.
+    Cleanup {
+        /// Exact task ID, `current`, or `all`.
+        task_ref: String,
+    },
     /// Run one long-lived command owned by the current task.
     Run {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
@@ -87,6 +92,7 @@ async fn main() -> Result<()> {
         Command::Result { task_ref } => bobr_task::result(&task_ref),
         Command::History { task_ref } => bobr_task::history(&task_ref),
         Command::Cancel { task_ref } => bobr_task::cancel(&task_ref).await,
+        Command::Cleanup { task_ref } => bobr_task::cleanup(&task_ref).await,
         Command::Run { command } => {
             let status = bobr_task::run(&command).await?;
             if status.success() {

@@ -10,7 +10,7 @@ mutually untrusted workers.
 The initial interface is:
 
 ```text
-bobr-task start <short-label> <request-file>
+bobr-task start <label> <request-file>
 bobr-task list
 bobr-task current
 bobr-task select <task-id>
@@ -19,6 +19,7 @@ bobr-task status <task-id|current>
 bobr-task result <task-id|current>
 bobr-task history <task-id|current>
 bobr-task cancel <task-id|current>
+bobr-task cleanup <task-id|current|all>
 bobr-task run -- <command> [args...]
 ```
 
@@ -46,6 +47,12 @@ reports the selection. Commands that take a task accept the literal `current`
 instead of an ID. Cancelling the selected task clears the selection without
 falling back to an older task; cancelled tasks remain available by exact ID but
 cannot be selected again.
+
+`cleanup` deletes terminal task state and the corresponding ZeroClaw worker
+session. It refuses an active task. `cleanup all` removes all terminal tasks
+owned by the current coordinator dialog, skips active tasks, and reports
+incompatible task schemas without deleting them. Deleting the selected task
+clears `current` without selecting a replacement.
 
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and

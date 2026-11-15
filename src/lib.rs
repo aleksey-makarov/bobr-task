@@ -52,6 +52,14 @@ struct CancelOutput<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct CleanupOutput {
+    deleted: Vec<String>,
+    skipped_active: Vec<String>,
+    skipped_incompatible: usize,
+    current_cleared: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct HistoryOutput<'a> {
     task_id: &'a str,
     current_turn: u32,
@@ -372,6 +380,69 @@ pub async fn cancel(task_ref: &str) -> Result<()> {
         turn: record.current_turn,
         current_cleared,
     })
+}
+
+/// Delete terminal tasks, their worker sessions, and their task-local state.
+pub async fn cleanup(task_ref: &str) -> Result<()> {
+    let config = Config::from_env()?;
+    let coordinator_session_id = coordinator_session_id()?;
+    let store = TaskStore::new(&config.task_root)?;
+    let _coordinator_lock = store.lock_coordinator(&coordinator_session_id)?;
+    let listed = if task_ref == "all" {
+        store.list_records(&coordinator_session_id)?
+    } else {
+        task::TaskRecords {
+            records: vec![resolve_owned_task(
+                &store,
+                &coordinator_session_id,
+                task_ref,
+            )?],
+            skipped_incompatible: 0,
+        }
+    };
+    let all = task_ref == "all";
+    let systemd = Systemd::new(&config);
+    let mut output = CleanupOutput {
+        deleted: Vec::new(),
+        skipped_active: Vec::new(),
+        skipped_incompatible: listed.skipped_incompatible,
+        current_cleared: false,
+    };
+
+    for initial_record in listed.records {
+        let task_id = initial_record.id;
+        let _task_lock = store.lock_task(&task_id)?;
+        let record = store.read_record(&task_id)?;
+        let terminal = store.read_result(&record)?.is_some();
+        if !terminal {
+            if all {
+                output.skipped_active.push(task_id);
+                continue;
+            }
+            bail!("task '{task_id}' is still active");
+        }
+        if systemd.unit_is_active(&record.controller_unit).await?
+            || systemd.unit_is_active(&command_unit(&task_id)).await?
+        {
+            if all {
+                output.skipped_active.push(task_id);
+                continue;
+            }
+            bail!("task '{task_id}' is still active");
+        }
+
+        if let Some(session_id) = record.worker_session_id.as_deref() {
+            let mut rpc = RpcClient::connect(&config.rpc_socket, HashMap::new()).await?;
+            rpc.session_delete(session_id)
+                .await
+                .with_context(|| format!("delete worker session '{session_id}'"))?;
+        }
+        output.current_cleared |= store.clear_current_if(&coordinator_session_id, &task_id)?;
+        store.remove_task(&task_id)?;
+        output.deleted.push(task_id);
+    }
+
+    print_json(&output)
 }
 
 /// Run one long-lived command in the current task's transient command unit.

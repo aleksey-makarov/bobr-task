@@ -10,7 +10,7 @@ Keep these invariants explicit:
 - each coordinator dialog owns an explicit current-task selection below
   `.coordinators/<session-id>/`; task commands enforce ownership, and
   cancellation clears only the matching selection without fallback;
-- the coordinator invokes `bobr-task start <short-label> <request-file>`; the
+- the coordinator invokes `bobr-task start <label> <request-file>`; the
   label is its own concise lowercase hyphen-separated summary, the request is a
   regular UTF-8 file below the coordinator workspace, and arbitrary user text
   never becomes shell syntax;
@@ -28,5 +28,7 @@ Keep these invariants explicit:
 - do not add a daemon, registry, scheduler, compatibility layer, or optional
   backend without a current use case;
 - RPC and systemd interactions must be covered by fakes in tests;
-- no command may delete a task directory.
+- `cleanup` is the only command allowed to delete a task directory; it
+  requires a terminal result, inactive controller and command units, and
+  deletion of the corresponding ZeroClaw worker session.
 

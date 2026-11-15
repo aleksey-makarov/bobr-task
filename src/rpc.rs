@@ -6,6 +6,8 @@ use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::net::UnixStream;
 
+const SESSION_NOT_FOUND: i64 = -32000;
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct TurnComplete {
     pub outcome: String,
@@ -77,6 +79,28 @@ impl RpcClient {
         self.call("session/abort", json!({"session_id": session_id}))
             .await?;
         Ok(())
+    }
+
+    pub async fn session_delete(&mut self, session_id: &str) -> Result<()> {
+        let method = "session/delete";
+        let request_id = self
+            .send_request(method, json!({"session_id": session_id}))
+            .await?;
+        loop {
+            let frame = self.read_frame().await?;
+            if frame.get("id").and_then(Value::as_u64) != Some(request_id) {
+                continue;
+            }
+            if let Some(error) = frame.get("error")
+                && !error.is_null()
+            {
+                if error.get("code").and_then(Value::as_i64) == Some(SESSION_NOT_FOUND) {
+                    return Ok(());
+                }
+                bail!("{method} failed: {}", rpc_error_message(error));
+            }
+            return Ok(());
+        }
     }
 
     pub async fn session_prompt<F>(
@@ -234,6 +258,10 @@ mod tests {
             let abort = read_request(&mut lines).await;
             assert_eq!(abort["method"], "session/abort");
             send(&mut writer, json!({"jsonrpc":"2.0","id":4,"result":{}})).await;
+
+            let delete = read_request(&mut lines).await;
+            assert_eq!(delete["method"], "session/delete");
+            send(&mut writer, json!({"jsonrpc":"2.0","id":5,"result":{}})).await;
         });
 
         let (reader, writer) = tokio::io::split(client_stream);
@@ -248,6 +276,37 @@ mod tests {
             .unwrap();
         assert_eq!(client.session_state("worker").await.unwrap(), "running");
         client.session_abort("worker").await.unwrap();
+        client.session_delete("worker").await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_a_missing_session_is_idempotent() {
+        let (client_stream, server_stream) = tokio::io::duplex(8192);
+        let server = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server_stream);
+            let mut lines = BufReader::new(reader).lines();
+            let _ = read_request(&mut lines).await;
+            send(&mut writer, json!({"jsonrpc":"2.0","id":1,"result":{}})).await;
+
+            let delete = read_request(&mut lines).await;
+            assert_eq!(delete["method"], "session/delete");
+            send(
+                &mut writer,
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":2,
+                    "error":{"code":-32000,"message":"Session not found"}
+                }),
+            )
+            .await;
+        });
+
+        let (reader, writer) = tokio::io::split(client_stream);
+        let mut client = RpcClient::from_io(Box::new(reader), Box::new(writer), HashMap::new())
+            .await
+            .unwrap();
+        client.session_delete("missing").await.unwrap();
         server.await.unwrap();
     }
 }

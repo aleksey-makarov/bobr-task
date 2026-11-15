@@ -394,6 +394,11 @@ impl TaskStore {
         })
     }
 
+    pub fn remove_task(&self, task_id: &str) -> Result<()> {
+        let path = self.task_dir(task_id)?;
+        fs::remove_dir_all(&path).with_context(|| format!("remove task '{}'", path.display()))
+    }
+
     fn result_path(&self, task_id: &str, turn: u32) -> Result<PathBuf> {
         Ok(self
             .task_dir(task_id)?
