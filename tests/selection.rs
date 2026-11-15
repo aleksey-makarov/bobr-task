@@ -4,6 +4,13 @@ use std::path::Path;
 use tempfile::tempdir;
 use tokio::process::Command;
 
+fn write_worker_workspace(path: &Path) {
+    fs::create_dir(path).unwrap();
+    for name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"] {
+        fs::write(path.join(name), format!("contents of {name}\n")).unwrap();
+    }
+}
+
 fn write_task(
     task_root: &Path,
     task_id: &str,
@@ -12,12 +19,11 @@ fn write_task(
     outcome: Option<&str>,
 ) {
     let task_dir = task_root.join(task_id);
-    fs::create_dir_all(task_dir.join("workspace/home")).unwrap();
     fs::create_dir_all(task_dir.join("workspace/tmp")).unwrap();
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "id": task_id,
             "coordinator_session_id": coordinator,
             "worker_session_id": null,
@@ -34,7 +40,7 @@ fn write_task(
         fs::write(
             task_dir.join("result.0001.json"),
             serde_json::to_vec_pretty(&json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "task_id": task_id,
                 "turn": 1,
                 "request": "test request",
@@ -164,7 +170,9 @@ async fn failed_start_clears_the_new_current_task() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let coordinator = dir.path().join("coordinator");
+    let worker_workspace = dir.path().join("worker");
     fs::create_dir(&coordinator).unwrap();
+    write_worker_workspace(&worker_workspace);
     fs::write(coordinator.join("request.md"), "test request\n").unwrap();
     let systemd_run = dir.path().join("systemd-run");
     fs::write(&systemd_run, "#!/bin/sh\necho launch failed >&2\nexit 1\n").unwrap();
@@ -178,6 +186,7 @@ async fn failed_start_clears_the_new_current_task() {
         .current_dir(&coordinator)
         .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
+        .env("BOBR_TASK_WORKER_WORKSPACE", &worker_workspace)
         .env("BOBR_TASK_SYSTEMD_RUN", &systemd_run)
         .env(
             "BOBR_TASK_BASE_PATH",
@@ -214,7 +223,9 @@ async fn successful_start_selects_the_new_task() {
     let dir = tempdir().unwrap();
     let task_root = dir.path().join("tasks");
     let coordinator = dir.path().join("coordinator");
+    let worker_workspace = dir.path().join("worker");
     fs::create_dir(&coordinator).unwrap();
+    write_worker_workspace(&worker_workspace);
     fs::write(coordinator.join("request.md"), "test request\n").unwrap();
     let systemd_run = dir.path().join("systemd-run");
     fs::write(&systemd_run, "#!/bin/sh\nexit 0\n").unwrap();
@@ -228,6 +239,7 @@ async fn successful_start_selects_the_new_task() {
         .current_dir(&coordinator)
         .env("ZEROCLAW_SESSION_ID", "coordinator")
         .env("BOBR_TASK_ROOT", &task_root)
+        .env("BOBR_TASK_WORKER_WORKSPACE", &worker_workspace)
         .env("BOBR_TASK_SYSTEMD_RUN", &systemd_run)
         .env(
             "BOBR_TASK_BASE_PATH",

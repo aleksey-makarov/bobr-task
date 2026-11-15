@@ -2,9 +2,10 @@
 
 `bobr-task` launches Bobr maintenance tasks from a ZeroClaw coordinator. Each
 task receives its own `workspace/` directory, environment, and `bobr_worker`
-session; controller metadata stays outside that workspace and the controller
-runs as a transient user systemd unit. Task directories separate mutable
-state, not mutually untrusted workers.
+session; that directory is both the worker's current directory and its home.
+Controller metadata stays outside the workspace and the controller runs as a
+transient user systemd unit. Task directories separate mutable state, not
+mutually untrusted workers.
 
 The initial interface is:
 
@@ -27,8 +28,15 @@ The coordinator supplies a one- or two-word lowercase label such as
 ID such as `261110184237.create-hello`; a same-second collision gets a numeric
 suffix. It reads the current coordinator session ID from
 `ZEROCLAW_SESSION_ID`, copies the explicit request into task metadata, and
-never reconstructs a request from conversation history. User text is read
-from the file rather than interpolated into a shell command.
+never reconstructs a request from conversation history. It also copies the
+worker's `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, and `USER.md` into
+the new workspace, where ZeroClaw loads them for that session. User text is
+read from the file rather than interpolated into a shell command.
+
+Bootstrap files come from
+`/mnt/zeroclaw/.zeroclaw/agents/bobr_worker/workspace` by default. Set
+`BOBR_TASK_WORKER_WORKSPACE` to an absolute path to use another canonical
+worker workspace.
 
 `continue` sends a follow-up request to the same worker session in the same
 workspace. Completed turns are kept as immutable `result.NNNN.json` files;
@@ -46,8 +54,9 @@ cannot be selected again.
 The host must provide an explicit `BOBR_TASK_BASE_PATH` containing absolute
 directories. A worker receives only its task-local `~/.local/bin` and
 `~/.cargo/bin` followed by that base path; it does not inherit the daemon's
-ambient `PATH`. Its `HOME` and `TMPDIR` also point inside the task workspace.
-The base path must provide `systemd-run` and `systemctl`.
+ambient `PATH`. `HOME` is the task's `workspace/` directory and `TMPDIR` is its
+`workspace/tmp/` subdirectory. The base path must provide `systemd-run` and
+`systemctl`.
 
 Worker sessions use `GH_CONFIG_DIR` when set; otherwise they share the GitHub
 CLI configuration in `/mnt/zeroclaw/.zeroclaw/github`.

@@ -10,12 +10,11 @@ async fn run_returns_the_command_unit_exit_status() {
     let task_root = dir.path().join("tasks");
     let task_id = "261111151608.status-check";
     let workspace = task_root.join(task_id).join("workspace");
-    fs::create_dir_all(workspace.join("home")).unwrap();
     fs::create_dir_all(workspace.join("tmp")).unwrap();
     fs::write(
         task_root.join(task_id).join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",

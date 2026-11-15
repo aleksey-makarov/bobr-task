@@ -34,7 +34,7 @@ async fn cancel_stops_the_command_before_aborting_the_worker() {
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",

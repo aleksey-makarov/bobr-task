@@ -9,12 +9,11 @@ use tokio::process::Command;
 
 fn write_task(task_root: &Path, task_id: &str, turn: u32, request: &str) {
     let task_dir = task_root.join(task_id);
-    fs::create_dir_all(task_dir.join("workspace/home")).unwrap();
     fs::create_dir_all(task_dir.join("workspace/tmp")).unwrap();
     fs::write(
         task_dir.join("task.json"),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "id": task_id,
             "coordinator_session_id": "coordinator",
             "worker_session_id": "worker",
@@ -35,7 +34,7 @@ fn write_result(task_root: &Path, task_id: &str, turn: u32, request: &str) {
             .join(task_id)
             .join(format!("result.{turn:04}.json")),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 3,
+            "schema_version": 4,
             "task_id": task_id,
             "turn": turn,
             "request": request,

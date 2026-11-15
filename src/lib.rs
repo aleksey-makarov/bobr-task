@@ -90,7 +90,12 @@ pub async fn start(label: &str, request_file: &Path) -> Result<()> {
 
     let store = TaskStore::new(&config.task_root)?;
     let _coordinator_lock = store.lock_coordinator(&coordinator_session_id)?;
-    let record = store.create(label, &coordinator_session_id, &request)?;
+    let record = store.create(
+        label,
+        &coordinator_session_id,
+        &request,
+        &config.worker_workspace,
+    )?;
     if let Err(error) = store.set_current(&coordinator_session_id, Some(&record.id)) {
         store.write_result(&TaskResult::failed(
             &record,
@@ -480,7 +485,7 @@ async fn controller_inner(
     let mut record = store.read_record(task_id)?;
     let task_dir = store.task_dir(task_id)?;
     let workspace = store.workspace_dir(task_id)?;
-    let home = workspace.join("home");
+    let home = workspace.clone();
     let tmp = workspace.join("tmp");
     let path = task_path(&home, &worker_base_path()?);
     let mut rpc_env = HashMap::new();
@@ -712,11 +717,11 @@ mod tests {
     fn task_path_uses_only_task_local_bins_and_the_explicit_base() {
         assert_eq!(
             task_path(
-                Path::new("/tasks/example/workspace/home"),
+                Path::new("/tasks/example/workspace"),
                 "/run/wrappers/bin:/nix/store/agent/bin"
             ),
-            "/tasks/example/workspace/home/.local/bin:\
-/tasks/example/workspace/home/.cargo/bin:\
+            "/tasks/example/workspace/.local/bin:\
+/tasks/example/workspace/.cargo/bin:\
 /run/wrappers/bin:/nix/store/agent/bin"
         );
     }

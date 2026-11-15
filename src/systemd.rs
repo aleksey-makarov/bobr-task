@@ -34,7 +34,7 @@ impl Systemd {
         worker_base_path: &str,
     ) -> Result<()> {
         let task_dir = self.task_root.join(&task.id);
-        let home = task_dir.join("workspace/home");
+        let home = task_dir.join("workspace");
         let tmp = task_dir.join("workspace/tmp");
         let path = std::env::var("PATH").context("PATH is not set")?;
         let mut command = self.user_command(&self.systemd_run);
@@ -125,7 +125,7 @@ impl Systemd {
             bail!("command must not be empty");
         }
         let unit = command_unit(task_id);
-        let home = workspace.join("home");
+        let home = workspace;
         let tmp = workspace.join("tmp");
         let mut command = self.user_command(&self.systemd_run);
         command
@@ -204,6 +204,7 @@ mod tests {
             task_root: "/tasks".into(),
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
+            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: "systemd-run".into(),
             systemctl: "systemctl".into(),
@@ -226,7 +227,6 @@ mod tests {
         let task_root = dir.path().join("tasks");
         let task_id = "261110184237.test-task";
         let task_dir = task_root.join(task_id);
-        fs::create_dir_all(task_dir.join("workspace/home")).unwrap();
         fs::create_dir_all(task_dir.join("workspace/tmp")).unwrap();
         let arguments = dir.path().join("arguments");
         let fake = dir.path().join("systemd-run");
@@ -243,12 +243,13 @@ mod tests {
             task_root,
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
+            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: fake,
             systemctl: "systemctl".into(),
         };
         let task = TaskRecord {
-            schema_version: 3,
+            schema_version: 4,
             id: task_id.into(),
             coordinator_session_id: "coordinator".into(),
             worker_session_id: None,
@@ -274,6 +275,10 @@ mod tests {
         assert!(arguments.contains("--property=ReadWritePaths="));
         assert!(arguments.contains("--setenv=PATH="));
         assert!(arguments.contains("--setenv=TMPDIR="));
+        assert!(arguments.contains(&format!(
+            "--setenv=HOME={}\n",
+            task_dir.join("workspace").display()
+        )));
         assert!(arguments.contains("--setenv=GH_CONFIG_DIR=/github\n"));
         assert!(
             arguments
@@ -290,7 +295,6 @@ mod tests {
         let workspace = task_root.join(task_id).join("workspace");
         let working_directory = workspace.join("bobr-recipes");
         fs::create_dir_all(&working_directory).unwrap();
-        fs::create_dir_all(workspace.join("home")).unwrap();
         fs::create_dir_all(workspace.join("tmp")).unwrap();
         let arguments = dir.path().join("arguments");
         let fake = dir.path().join("systemd-run");
@@ -307,6 +311,7 @@ mod tests {
             task_root: task_root.clone(),
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
+            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: fake,
             systemctl: "systemctl".into(),
@@ -324,7 +329,7 @@ mod tests {
                     Path::new("/nix/store/bobr-task/bin/bobr-task"),
                     &workspace,
                     &working_directory,
-                    "/task/home/.local/bin:/nix/store/agent/bin",
+                    "/task/workspace/.local/bin:/nix/store/agent/bin",
                     &argv,
                 )
                 .await
@@ -375,6 +380,7 @@ mod tests {
             task_root: dir.path().join("tasks"),
             rpc_socket: "/rpc.sock".into(),
             github_config_dir: "/github".into(),
+            worker_workspace: "/worker".into(),
             worker_alias: "worker".into(),
             systemd_run: "systemd-run".into(),
             systemctl: fake,

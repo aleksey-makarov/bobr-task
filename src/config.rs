@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub const DEFAULT_TASK_ROOT: &str = "/mnt/zeroclaw/bobr-tasks";
 pub const DEFAULT_RPC_SOCKET: &str = "/mnt/zeroclaw/.zeroclaw/data/daemon.sock";
 pub const DEFAULT_GITHUB_CONFIG_DIR: &str = "/mnt/zeroclaw/.zeroclaw/github";
+pub const DEFAULT_WORKER_WORKSPACE: &str = "/mnt/zeroclaw/.zeroclaw/agents/bobr_worker/workspace";
 pub const DEFAULT_WORKER_ALIAS: &str = "bobr_worker";
 pub const BOBR_TASK_BASE_PATH: &str = "BOBR_TASK_BASE_PATH";
 
@@ -13,6 +14,7 @@ pub struct Config {
     pub task_root: PathBuf,
     pub rpc_socket: PathBuf,
     pub github_config_dir: PathBuf,
+    pub worker_workspace: PathBuf,
     pub worker_alias: String,
     pub systemd_run: PathBuf,
     pub systemctl: PathBuf,
@@ -41,6 +43,7 @@ impl Config {
         let task_root = env_path("BOBR_TASK_ROOT", DEFAULT_TASK_ROOT);
         let rpc_socket = env_path("ZEROCLAW_RPC_SOCKET", DEFAULT_RPC_SOCKET);
         let github_config_dir = env_path("GH_CONFIG_DIR", DEFAULT_GITHUB_CONFIG_DIR);
+        let worker_workspace = env_path("BOBR_TASK_WORKER_WORKSPACE", DEFAULT_WORKER_WORKSPACE);
         if !task_root.is_absolute() {
             bail!("BOBR_TASK_ROOT must be an absolute path");
         }
@@ -50,10 +53,14 @@ impl Config {
         if !github_config_dir.is_absolute() {
             bail!("GH_CONFIG_DIR must be an absolute path");
         }
+        if !worker_workspace.is_absolute() {
+            bail!("BOBR_TASK_WORKER_WORKSPACE must be an absolute path");
+        }
         Ok(Self {
             task_root,
             rpc_socket,
             github_config_dir,
+            worker_workspace,
             worker_alias: env::var("BOBR_TASK_WORKER_ALIAS")
                 .unwrap_or_else(|_| DEFAULT_WORKER_ALIAS.to_owned()),
             systemd_run: env_path("BOBR_TASK_SYSTEMD_RUN", "systemd-run"),
